@@ -23,6 +23,10 @@ public partial class Users
 
     public int Role { get; set; }
 
+    public bool? IsVerified { get; set; }
+
+    public bool? IsActive { get; set; }
+
     public virtual ICollection<Citations> Citations { get; set; } = new List<Citations>();
 
     public virtual Plans CurrentPlan { get; set; }
@@ -30,6 +34,8 @@ public partial class Users
     public virtual ICollection<DocumentStorage> DocumentStorage { get; set; } = new List<DocumentStorage>();
 
     public virtual ICollection<Documents> Documents { get; set; } = new List<Documents>();
+
+    public virtual ICollection<OtpToken> OtpToken { get; set; } = new List<OtpToken>();
 
     public virtual ICollection<Payments> Payments { get; set; } = new List<Payments>();
 

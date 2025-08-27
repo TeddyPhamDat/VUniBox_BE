@@ -24,6 +24,8 @@ public partial class VUniBoxContext : DbContext
 
     public virtual DbSet<Documents> Documents { get; set; }
 
+    public virtual DbSet<OtpToken> OtpToken { get; set; }
+
     public virtual DbSet<Payments> Payments { get; set; }
 
     public virtual DbSet<Plans> Plans { get; set; }
@@ -33,10 +35,6 @@ public partial class VUniBoxContext : DbContext
     public virtual DbSet<UsageStats> UsageStats { get; set; }
 
     public virtual DbSet<Users> Users { get; set; }
-
-    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-#warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
-        => optionsBuilder.UseSqlServer();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -123,6 +121,27 @@ public partial class VUniBoxContext : DbContext
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Documents__UserI__5070F446");
+        });
+
+        modelBuilder.Entity<OtpToken>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PK__OtpToken__3214EC074A498A17");
+
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.Email)
+                .IsRequired()
+                .HasMaxLength(255);
+            entity.Property(e => e.Token)
+                .IsRequired()
+                .HasMaxLength(255);
+            entity.Property(e => e.Used).HasDefaultValue(false);
+
+            entity.HasOne(d => d.User).WithMany(p => p.OtpToken)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK__OtpToken__UserId__06CD04F7");
         });
 
         modelBuilder.Entity<Payments>(entity =>
@@ -234,6 +253,8 @@ public partial class VUniBoxContext : DbContext
                 .IsRequired()
                 .HasMaxLength(255);
             entity.Property(e => e.FullName).HasMaxLength(255);
+            entity.Property(e => e.IsActive).HasDefaultValue(true);
+            entity.Property(e => e.IsVerified).HasDefaultValue(false);
             entity.Property(e => e.PasswordHash).HasMaxLength(255);
 
             entity.HasOne(d => d.CurrentPlan).WithMany(p => p.Users)
