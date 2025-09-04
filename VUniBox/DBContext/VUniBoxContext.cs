@@ -67,11 +67,15 @@ public partial class VUniBoxContext : DbContext
 
             entity.Property(e => e.DocumentStorageId).HasColumnName("DocumentStorageID");
             entity.Property(e => e.AuthorName).HasMaxLength(255);
+            entity.Property(e => e.Authors).HasMaxLength(500);
             entity.Property(e => e.CitationStyle).HasMaxLength(50);
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("(getdate())")
                 .HasColumnType("datetime");
             entity.Property(e => e.DocumentId).HasColumnName("DocumentID");
+            entity.Property(e => e.Doi)
+                .HasMaxLength(255)
+                .HasColumnName("DOI");
             entity.Property(e => e.FavoriteFlag).HasDefaultValue(false);
             entity.Property(e => e.FileName)
                 .IsRequired()
@@ -80,6 +84,22 @@ public partial class VUniBoxContext : DbContext
                 .IsRequired()
                 .HasMaxLength(1000);
             entity.Property(e => e.FileType).HasMaxLength(50);
+            entity.Property(e => e.Isbn)
+                .HasMaxLength(50)
+                .HasColumnName("ISBN");
+            entity.Property(e => e.Issue).HasMaxLength(50);
+            entity.Property(e => e.Journal).HasMaxLength(255);
+            entity.Property(e => e.Keywords).HasMaxLength(500);
+            entity.Property(e => e.Language)
+                .HasMaxLength(50)
+                .HasDefaultValue("en");
+            entity.Property(e => e.Pages).HasMaxLength(50);
+            entity.Property(e => e.Publisher).HasMaxLength(255);
+            entity.Property(e => e.RetrievedDate)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.Source).HasMaxLength(255);
+            entity.Property(e => e.Subject).HasMaxLength(255);
             entity.Property(e => e.Title)
                 .IsRequired()
                 .HasMaxLength(255);
@@ -87,6 +107,7 @@ public partial class VUniBoxContext : DbContext
                 .HasDefaultValueSql("(getdate())")
                 .HasColumnType("datetime");
             entity.Property(e => e.UserId).HasColumnName("UserID");
+            entity.Property(e => e.Volume).HasMaxLength(50);
 
             entity.HasOne(d => d.Document).WithMany(p => p.DocumentStorage)
                 .HasForeignKey(d => d.DocumentId)
@@ -102,20 +123,42 @@ public partial class VUniBoxContext : DbContext
             entity.HasKey(e => e.DocumentId).HasName("PK__Document__1ABEEF6F7A53CBE8");
 
             entity.Property(e => e.DocumentId).HasColumnName("DocumentID");
+            entity.Property(e => e.Author).HasMaxLength(500);
+            entity.Property(e => e.Authors).HasMaxLength(500);
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("(getdate())")
                 .HasColumnType("datetime");
+            entity.Property(e => e.Doi)
+                .HasMaxLength(255)
+                .HasColumnName("DOI");
             entity.Property(e => e.ExpiryDate).HasColumnType("datetime");
             entity.Property(e => e.FilePath).HasMaxLength(500);
+            entity.Property(e => e.Isbn)
+                .HasMaxLength(50)
+                .HasColumnName("ISBN");
+            entity.Property(e => e.Issue).HasMaxLength(50);
+            entity.Property(e => e.Journal).HasMaxLength(255);
+            entity.Property(e => e.Keywords).HasMaxLength(500);
+            entity.Property(e => e.Language)
+                .HasMaxLength(50)
+                .HasDefaultValue("en");
+            entity.Property(e => e.Pages).HasMaxLength(50);
+            entity.Property(e => e.Publisher).HasMaxLength(255);
+            entity.Property(e => e.RetrievedDate)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.Source).HasMaxLength(255);
             entity.Property(e => e.SourceUrl)
                 .HasMaxLength(500)
                 .HasColumnName("SourceURL");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
                 .HasDefaultValue("Saved");
+            entity.Property(e => e.Subject).HasMaxLength(255);
             entity.Property(e => e.Title).HasMaxLength(255);
             entity.Property(e => e.Type).HasMaxLength(20);
             entity.Property(e => e.UserId).HasColumnName("UserID");
+            entity.Property(e => e.Volume).HasMaxLength(50);
 
             entity.HasOne(d => d.User).WithMany(p => p.Documents)
                 .HasForeignKey(d => d.UserId)

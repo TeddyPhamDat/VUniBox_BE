@@ -2,6 +2,7 @@
 #nullable disable
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace VUniBox.Models;
 
@@ -25,9 +26,46 @@ public partial class Documents
 
     public DateTime? ExpiryDate { get; set; }
 
+    public string Author { get; set; }
+
+    public string Authors { get; set; }
+
+    public DateOnly? PublicationDate { get; set; }
+
+    public string Publisher { get; set; }
+
+    public string Journal { get; set; }
+
+    public string Volume { get; set; }
+
+    public string Issue { get; set; }
+
+    public string Pages { get; set; }
+
+    public string Doi { get; set; }
+
+    public string Isbn { get; set; }
+
+    public string Abstract { get; set; }
+
+    public string Description { get; set; }
+
+    public string Keywords { get; set; }
+
+    public string Subject { get; set; }
+
+    public string Source { get; set; }
+
+    public string Language { get; set; }
+
+    public DateTime? RetrievedDate { get; set; }
+
+    [JsonIgnore]
     public virtual ICollection<Citations> Citations { get; set; } = new List<Citations>();
 
+    [JsonIgnore]
     public virtual ICollection<DocumentStorage> DocumentStorage { get; set; } = new List<DocumentStorage>();
 
+    [JsonIgnore]
     public virtual Users User { get; set; }
 }

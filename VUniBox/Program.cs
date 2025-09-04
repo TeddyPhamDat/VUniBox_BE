@@ -6,12 +6,22 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text; // Add this using directive at the top of the file
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Register all required services for the application, including controllers, Swagger, authentication, and custom services.
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Configure JSON serialization to handle object cycles
+        options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+        options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+        options.JsonSerializerOptions.WriteIndented = true;
+    });
 
 // Enable OpenAPI/Swagger for API documentation and testing.
 builder.Services.AddEndpointsApiExplorer();
@@ -66,6 +76,22 @@ if (builder.Environment.IsDevelopment())
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<JwtService>();
 builder.Services.AddTransient<IEmailSender, EmailSender>();
+
+// Register Classification Services
+builder.Services.AddScoped<VUniBox.Services.Classification.IFileClassificationService, VUniBox.Services.Classification.FileClassificationService>();
+builder.Services.AddScoped<VUniBox.Services.Classification.IUrlClassificationService, VUniBox.Services.Classification.UrlClassificationService>();
+builder.Services.AddScoped<VUniBox.Services.Classification.IClassificationService, VUniBox.Services.Classification.ClassificationService>();
+
+// Register Metadata Extraction Services
+builder.Services.AddScoped<VUniBox.Services.Metadata.IFileMetadataExtractor, VUniBox.Services.Metadata.FileMetadataExtractor>();
+builder.Services.AddScoped<VUniBox.Services.Metadata.IUrlMetadataExtractor, VUniBox.Services.Metadata.UrlMetadataExtractor>();
+builder.Services.AddScoped<VUniBox.Services.Metadata.IMetadataExtractionService, VUniBox.Services.Metadata.MetadataExtractionService>();
+
+// Register Document Management Services
+builder.Services.AddScoped<VUniBox.Services.DocumentManagement.IDocumentLifecycleService, VUniBox.Services.DocumentManagement.DocumentLifecycleService>();
+
+// Register Background Services
+builder.Services.AddHostedService<VUniBox.Services.Background.TrashCleanupService>();
 
 // Add this before app.Build();
 builder.Services.AddDbContext<VUniBox.DBContext.VUniBoxContext>(options =>

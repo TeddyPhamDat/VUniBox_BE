@@ -291,7 +291,7 @@ namespace VUniBox.Controllers
             await _context.SaveChangesAsync();
 
             // Gửi email chứa mã OTP ở đây (tùy tích hợp)
-            await _emailSender.SendEmailAsync(user.Email, "EduVision Password Reset OTP", $"Your OTP code is: {otp.Token}");
+            await _emailSender.SendEmailAsync(user.Email, "VUniBox Password Reset OTP", $"Your OTP code is: {otp.Token}");
 
             return Ok(ApiResponse<string>.Success("", "OTP has been sent to your email"));
         }
