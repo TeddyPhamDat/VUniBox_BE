@@ -25,7 +25,7 @@ namespace VUniBox.Services.Classification
                 { "academia.edu", DocumentType.Research },
                 { "ssrn", DocumentType.Research },
                 
-                // Book sites
+                // Book sites (including academic book publishers)
                 { "amazon", DocumentType.Book },
                 { "goodreads", DocumentType.Book },
                 { "books.google", DocumentType.Book },
@@ -33,6 +33,11 @@ namespace VUniBox.Services.Classification
                 { "bookdepository", DocumentType.Book },
                 { "kobo", DocumentType.Book },
                 { "scribd", DocumentType.Book },
+                { "sciencedirect.com/book", DocumentType.Book }, // ScienceDirect books
+                { "link.springer.com/book", DocumentType.Book }, // Springer books
+                { "wiley.com/book", DocumentType.Book }, // Wiley books
+                { "cambridge.org/core/books", DocumentType.Book }, // Cambridge books
+                { "oxfordacademic.com/book", DocumentType.Book }, // Oxford books
                 
                 // News sites
                 { "bbc", DocumentType.Newspaper },

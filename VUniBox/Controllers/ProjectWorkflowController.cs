@@ -231,7 +231,7 @@ namespace VUniBox.Controllers
                 var response = new ActionConfirmationResponse
                 {
                     Success = true,
-                    Document = new DocumentDto(document), // Convert to DTO
+                    DocumentId = document.DocumentId,
                     Action = action,
                     Message = request.SaveToFolder 
                         ? $"Tài liệu đã được lưu vào {location}" 
@@ -239,7 +239,7 @@ namespace VUniBox.Controllers
                     IsInTrash = isInTrash,
                     ExpiryDate = expiryDate,
                     Location = location,
-                    Metadata = metadata
+                    Metadata = new CitationMetadataDto(document, metadata) // Combine document + extracted metadata
                 };
 
                 return Ok(ApiResponse<ActionConfirmationResponse>.Success(response, "Xử lý thành công"));

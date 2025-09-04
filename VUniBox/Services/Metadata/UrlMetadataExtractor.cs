@@ -76,56 +76,6 @@ namespace VUniBox.Services.Metadata
                         break;
                     }
                 }
-
-                // Extract volume and issue
-                var volumeElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_volume']");
-                if (volumeElement != null)
-                {
-                    metadata.Volume = GetAttributeValue(volumeElement, "content");
-                }
-
-                var issueElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_issue']");
-                if (issueElement != null)
-                {
-                    metadata.Issue = GetAttributeValue(issueElement, "content");
-                }
-
-                // Extract pages
-                var pagesElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_firstpage']");
-                if (pagesElement != null)
-                {
-                    var firstPage = GetAttributeValue(pagesElement, "content");
-                    var lastPageElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_lastpage']");
-                    var lastPage = lastPageElement != null ? GetAttributeValue(lastPageElement, "content") : null;
-                    
-                    metadata.Pages = lastPage != null && firstPage != lastPage ? $"{firstPage}-{lastPage}" : firstPage;
-                }
-
-                // Extract abstract
-                var abstractSelectors = new[]
-                {
-                    "meta[name='citation_abstract']",
-                    "meta[property='og:description']",
-                    ".abstract",
-                    ".summary"
-                };
-
-                foreach (var selector in abstractSelectors)
-                {
-                    var abstractElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
-                    if (abstractElement != null)
-                    {
-                        metadata.Abstract = GetAttributeValue(abstractElement, "content") ?? abstractElement.InnerText?.Trim();
-                        break;
-                    }
-                }
-
-                // Extract keywords
-                var keywordsElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_keywords']");
-                if (keywordsElement != null)
-                {
-                    metadata.Keywords = GetAttributeValue(keywordsElement, "content");
-                }
             }
             catch (Exception ex)
             {
@@ -145,18 +95,48 @@ namespace VUniBox.Services.Metadata
                 var doc = new HtmlDocument();
                 doc.LoadHtml(html);
 
-                // Extract ISBN
-                var isbnMatch = Regex.Match(html, @"ISBN[:\s]*([0-9\-X]+)", RegexOptions.IgnoreCase);
-                if (isbnMatch.Success)
+                // Extract ISBN for ScienceDirect and academic sites
+                var isbnPatterns = new[]
                 {
-                    metadata.ISBN = isbnMatch.Groups[1].Value;
+                    @"ISBN[:\s]*([0-9\-X]{10,17})",
+                    @"isbn[:\s]*([0-9\-X]{10,17})",
+                    @"\b(97[89][\d\-]{10,})\b"
+                };
+
+                foreach (var pattern in isbnPatterns)
+                {
+                    var isbnMatch = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
+                    if (isbnMatch.Success)
+                    {
+                        metadata.ISBN = isbnMatch.Groups[1].Value.Replace("-", "");
+                        break;
+                    }
                 }
 
-                // Extract publisher
+                // Extract DOI
+                var doiPatterns = new[]
+                {
+                    @"(?:DOI[:\s]*|doi[:\s]*|https://doi\.org/)(10\.\d{4,}/[^\s<>""'\]]+)",
+                    @"(10\.\d{4,}/[^\s<>""'\]]+)"
+                };
+
+                foreach (var pattern in doiPatterns)
+                {
+                    var doiMatch = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
+                    if (doiMatch.Success)
+                    {
+                        metadata.DOI = doiMatch.Groups[doiMatch.Groups.Count - 1].Value;
+                        break;
+                    }
+                }
+
+                // Enhanced publisher extraction
                 var publisherSelectors = new[]
                 {
                     "meta[name='citation_publisher']",
                     "meta[property='book:publisher']",
+                    "meta[name='publisher']",
+                    "meta[property='og:site_name']",
                     ".publisher",
                     ".imprint"
                 };
@@ -166,18 +146,60 @@ namespace VUniBox.Services.Metadata
                     var publisherElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
                     if (publisherElement != null)
                     {
-                        metadata.Publisher = GetAttributeValue(publisherElement, "content") ?? publisherElement.InnerText?.Trim();
-                        break;
+                        var publisher = GetAttributeValue(publisherElement, "content") ?? publisherElement.InnerText?.Trim();
+                        if (!string.IsNullOrEmpty(publisher) && publisher.Length > 2)
+                        {
+                            metadata.Publisher = publisher;
+                            break;
+                        }
                     }
                 }
 
-                // Extract publication date
+                // Enhanced author extraction
+                var authorSelectors = new[]
+                {
+                    "meta[name='citation_author']",
+                    "meta[property='book:author']",
+                    "meta[name='author']",
+                    "meta[property='author']",
+                    ".author",
+                    ".authors"
+                };
+
+                var authorsList = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var elements = doc.DocumentNode.SelectNodes($"//{selector}");
+                    if (elements != null)
+                    {
+                        foreach (var element in elements)
+                        {
+                            var author = GetAttributeValue(element, "content") ?? element.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                author = Regex.Replace(author, @"^(By\s|Author[:\s]*)", "", RegexOptions.IgnoreCase).Trim();
+                                if (!authorsList.Contains(author))
+                                {
+                                    authorsList.Add(author);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (authorsList.Any())
+                {
+                    metadata.Authors = string.Join(", ", authorsList);
+                    metadata.Author = authorsList.First();
+                }
+
+                // Publication date extraction
                 var dateSelectors = new[]
                 {
                     "meta[name='citation_publication_date']",
+                    "meta[name='citation_date']",
                     "meta[property='book:release_date']",
-                    ".publication-date",
-                    ".publish-date"
+                    ".publication-date"
                 };
 
                 foreach (var selector in dateSelectors)
@@ -186,13 +208,28 @@ namespace VUniBox.Services.Metadata
                     if (dateElement != null)
                     {
                         var dateStr = GetAttributeValue(dateElement, "content") ?? dateElement.InnerText?.Trim();
-                        if (DateOnly.TryParse(dateStr, out var date))
+                        if (!string.IsNullOrEmpty(dateStr))
                         {
-                            metadata.PublicationDate = date;
+                            if (DateTime.TryParse(dateStr, out var date))
+                            {
+                                metadata.PublicationDate = DateOnly.FromDateTime(date);
+                                break;
+                            }
+                            if (Regex.IsMatch(dateStr, @"\b(19|20)\d{2}\b") && int.TryParse(Regex.Match(dateStr, @"\b(19|20)\d{2}\b").Value, out var year))
+                            {
+                                metadata.PublicationDate = new DateOnly(year, 1, 1);
+                                break;
+                            }
                         }
-                        break;
                     }
                 }
+
+                // Set language and retrieved date
+                if (string.IsNullOrEmpty(metadata.Language))
+                {
+                    metadata.Language = "en";
+                }
+                metadata.RetrievedDate = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
@@ -217,10 +254,8 @@ namespace VUniBox.Services.Metadata
                 {
                     "meta[property='article:published_time']",
                     "meta[name='article:published_time']",
-                    "meta[property='og:article:published_time']",
-                    ".publish-date",
-                    ".article-date",
-                    "time[datetime]"
+                    "time[datetime]",
+                    ".publish-date"
                 };
 
                 foreach (var selector in dateSelectors)
@@ -232,11 +267,11 @@ namespace VUniBox.Services.Metadata
                                      GetAttributeValue(dateElement, "datetime") ?? 
                                      dateElement.InnerText?.Trim();
                         
-                        if (DateOnly.TryParse(dateStr, out var date))
+                        if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var date))
                         {
-                            metadata.PublicationDate = date;
+                            metadata.PublicationDate = DateOnly.FromDateTime(date);
+                            break;
                         }
-                        break;
                     }
                 }
 
@@ -247,8 +282,7 @@ namespace VUniBox.Services.Metadata
                     "meta[property='article:author']",
                     "meta[name='author']",
                     ".author",
-                    ".byline",
-                    ".writer"
+                    ".byline"
                 };
 
                 foreach (var selector in authorSelectors)
@@ -256,10 +290,35 @@ namespace VUniBox.Services.Metadata
                     var authorElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
                     if (authorElement != null)
                     {
-                        metadata.Author = GetAttributeValue(authorElement, "content") ?? authorElement.InnerText?.Trim();
-                        break;
+                        var author = GetAttributeValue(authorElement, "content") ?? authorElement.InnerText?.Trim();
+                        if (!string.IsNullOrEmpty(author))
+                        {
+                            author = Regex.Replace(author, @"^(By\s|Written by\s)", "", RegexOptions.IgnoreCase).Trim();
+                            metadata.Author = author;
+                            metadata.Authors = author;
+                            break;
+                        }
                     }
                 }
+
+                // Extract publisher/source
+                var publisherElement = doc.DocumentNode.SelectSingleNode("//meta[@property='og:site_name']");
+                if (publisherElement != null)
+                {
+                    var publisher = GetAttributeValue(publisherElement, "content");
+                    if (!string.IsNullOrEmpty(publisher))
+                    {
+                        metadata.Publisher = publisher;
+                        metadata.Source = publisher;
+                    }
+                }
+
+                // Set language and retrieved date
+                if (string.IsNullOrEmpty(metadata.Language))
+                {
+                    metadata.Language = "en";
+                }
+                metadata.RetrievedDate = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
@@ -284,7 +343,8 @@ namespace VUniBox.Services.Metadata
                 {
                     "meta[property='og:title']",
                     "meta[name='twitter:title']",
-                    "title"
+                    "title",
+                    "h1"
                 };
 
                 foreach (var selector in titleSelectors)
@@ -292,8 +352,12 @@ namespace VUniBox.Services.Metadata
                     var titleElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
                     if (titleElement != null)
                     {
-                        metadata.Title = GetAttributeValue(titleElement, "content") ?? titleElement.InnerText?.Trim();
-                        break;
+                        var title = GetAttributeValue(titleElement, "content") ?? titleElement.InnerText?.Trim();
+                        if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                        {
+                            metadata.Title = title;
+                            break;
+                        }
                     }
                 }
 
@@ -310,40 +374,66 @@ namespace VUniBox.Services.Metadata
                     var descElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
                     if (descElement != null)
                     {
-                        metadata.Description = GetAttributeValue(descElement, "content") ?? descElement.InnerText?.Trim();
-                        break;
+                        var description = GetAttributeValue(descElement, "content");
+                        if (!string.IsNullOrEmpty(description))
+                        {
+                            metadata.Description = description;
+                            metadata.Abstract = description;
+                            break;
+                        }
                     }
                 }
 
-                // Extract site name
+                // Extract site name/source
                 var siteElement = doc.DocumentNode.SelectSingleNode("//meta[@property='og:site_name']");
                 if (siteElement != null)
                 {
                     metadata.Source = GetAttributeValue(siteElement, "content");
+                    if (string.IsNullOrEmpty(metadata.Publisher))
+                    {
+                        metadata.Publisher = metadata.Source;
+                    }
                 }
 
                 // Extract author
                 var authorElement = doc.DocumentNode.SelectSingleNode("//meta[@name='author']");
                 if (authorElement != null)
                 {
-                    metadata.Author = GetAttributeValue(authorElement, "content");
+                    var author = GetAttributeValue(authorElement, "content");
+                    if (!string.IsNullOrEmpty(author))
+                    {
+                        metadata.Author = author;
+                        metadata.Authors = author;
+                    }
                 }
 
-                // Extract publication date
-                var dateElement = doc.DocumentNode.SelectSingleNode("//meta[@property='article:published_time']");
-                if (dateElement != null)
+                // Extract keywords
+                var keywordsElement = doc.DocumentNode.SelectSingleNode("//meta[@name='keywords']");
+                if (keywordsElement != null)
                 {
-                    var dateStr = GetAttributeValue(dateElement, "content");
-                    if (DateOnly.TryParse(dateStr, out var date))
-                    {
-                        metadata.PublicationDate = date;
-                    }
+                    metadata.Keywords = GetAttributeValue(keywordsElement, "content");
+                }
+
+                // Extract language
+                var langElement = doc.DocumentNode.SelectSingleNode("//html[@lang]");
+                metadata.Language = langElement != null ? GetAttributeValue(langElement, "lang") ?? "en" : "en";
+
+                // Set retrieved date
+                metadata.RetrievedDate = DateTime.UtcNow;
+
+                // Fallback for title
+                if (string.IsNullOrEmpty(metadata.Title))
+                {
+                    var uri = new Uri(url);
+                    metadata.Title = $"Document from {uri.Host}";
                 }
             }
             catch (Exception ex)
             {
                 metadata.Title = "Error extracting metadata";
                 metadata.Description = $"Failed to extract metadata: {ex.Message}";
+                metadata.Language = "en";
+                metadata.RetrievedDate = DateTime.UtcNow;
             }
 
             return metadata;
