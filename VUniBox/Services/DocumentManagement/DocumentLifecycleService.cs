@@ -26,10 +26,10 @@ namespace VUniBox.Services.DocumentManagement
                     Title = metadata.Title,
                     FilePath = filePath ?? metadata.FilePath,
                     SourceUrl = metadata.URL,
-                    Type = documentType.ToString(),
+                    DocumentType = (int)documentType,
                     Status = DocumentStatus.Saved.ToString(),
                     CreatedAt = DateTime.UtcNow,
-                    ExpiryDate = null, // Không có expiry date cho saved documents
+                    TrashDate = null, // Không có expiry date cho saved documents
                     
                     // Metadata fields
                     Author = metadata.Author,
@@ -65,7 +65,7 @@ namespace VUniBox.Services.DocumentManagement
                         FilePath = filePath ?? metadata.FilePath,
                         Title = metadata.Title,
                         AuthorName = metadata.Author,
-                        PublicYear = metadata.PublicationDate?.Year,
+                        Year = metadata.PublicationDate?.Year,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,
                         FileSize = metadata.FileSize,
@@ -119,7 +119,7 @@ namespace VUniBox.Services.DocumentManagement
 
                 // Cập nhật status và set expiry date (10 ngày từ bây giờ)
                 document.Status = DocumentStatus.Trash.ToString();
-                document.ExpiryDate = DateTime.UtcNow.AddDays(10);
+                document.TrashDate = DateTime.UtcNow.AddDays(10);
 
                 await _context.SaveChangesAsync();
                 return true;
@@ -142,7 +142,7 @@ namespace VUniBox.Services.DocumentManagement
 
                 // Restore document
                 document.Status = DocumentStatus.Saved.ToString();
-                document.ExpiryDate = null;
+                document.TrashDate = null;
 
                 await _context.SaveChangesAsync();
                 return true;
@@ -202,8 +202,8 @@ namespace VUniBox.Services.DocumentManagement
                     .Include(d => d.DocumentStorage)
                     .Include(d => d.Citations)
                     .Where(d => d.Status == DocumentStatus.Trash.ToString() && 
-                               d.ExpiryDate.HasValue && 
-                               d.ExpiryDate.Value <= DateTime.UtcNow)
+                               d.TrashDate.HasValue && 
+                               d.TrashDate.Value <= DateTime.UtcNow)
                     .ToListAsync();
 
                 foreach (var document in expiredDocuments)
@@ -232,8 +232,8 @@ namespace VUniBox.Services.DocumentManagement
                     .Include(d => d.DocumentStorage)
                     .Include(d => d.Citations)
                     .Where(d => d.Status == DocumentStatus.Trash.ToString() && 
-                               d.ExpiryDate.HasValue && 
-                               d.ExpiryDate.Value <= DateTime.UtcNow)
+                               d.TrashDate.HasValue && 
+                               d.TrashDate.Value <= DateTime.UtcNow)
                     .ToListAsync();
 
                 if (expiredDocuments.Any())

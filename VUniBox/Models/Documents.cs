@@ -2,7 +2,6 @@
 #nullable disable
 using System;
 using System.Collections.Generic;
-using System.Text.Json.Serialization;
 
 namespace VUniBox.Models;
 
@@ -18,13 +17,17 @@ public partial class Documents
 
     public string SourceUrl { get; set; }
 
-    public string Type { get; set; }
+    public int DocumentType { get; set; }
 
     public string Status { get; set; }
 
     public DateTime? CreatedAt { get; set; }
 
-    public DateTime? ExpiryDate { get; set; }
+    public DateTime? TrashDate { get; set; }
+
+    public string CitationStyle { get; set; }
+
+    public int? Year { get; set; }
 
     public string Author { get; set; }
 
@@ -60,12 +63,9 @@ public partial class Documents
 
     public DateTime? RetrievedDate { get; set; }
 
-    [JsonIgnore]
     public virtual ICollection<Citations> Citations { get; set; } = new List<Citations>();
 
-    [JsonIgnore]
     public virtual ICollection<DocumentStorage> DocumentStorage { get; set; } = new List<DocumentStorage>();
 
-    [JsonIgnore]
     public virtual Users User { get; set; }
 }

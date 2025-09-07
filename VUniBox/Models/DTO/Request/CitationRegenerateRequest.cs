@@ -1,14 +1,8 @@
 namespace VUniBox.Models.DTO.Request
 {
-    public class DocumentTrashRequest
+    public class CitationRegenerateRequest
     {
         public int DocumentId { get; set; }
-        public int UserId { get; set; }
+        public string NewCitationStyle { get; set; }
     }
 }
-
-
-
-
-
-

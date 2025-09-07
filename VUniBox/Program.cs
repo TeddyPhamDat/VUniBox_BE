@@ -4,11 +4,28 @@ using VUniBox.Services.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text; // Add this using directive at the top of the file
+using VUniBox.Services.Classification; // Add this using directive
+using VUniBox.Services.Citation; // Add this using directive
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+// Set console encoding to UTF-8 for proper Vietnamese character display
+Console.OutputEncoding = System.Text.Encoding.UTF8;
+Console.InputEncoding = System.Text.Encoding.UTF8;
+
+// Run citation test before starting the application
+Console.WriteLine("=== Testing Citation Generation ===");
+try
+{
+    await VUniBox.TestCitation.TestGenerateCitation();
+    Console.WriteLine("=== Citation Test Completed ===\n");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Citation test failed: {ex.Message}");
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,11 +33,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
-        // Configure JSON serialization to handle object cycles
+        // Configure JSON serialization to handle object cycles and UTF-8 encoding
         options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
         options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
         options.JsonSerializerOptions.WriteIndented = true;
+        // Ensure proper Unicode encoding for Vietnamese characters
+        options.JsonSerializerOptions.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
     });
 
 // Enable OpenAPI/Swagger for API documentation and testing.
@@ -76,6 +95,15 @@ if (builder.Environment.IsDevelopment())
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<JwtService>();
 builder.Services.AddTransient<IEmailSender, EmailSender>();
+
+// Register Gemini Classification Service with HttpClient
+builder.Services.AddHttpClient<IGeminiClassificationService, GeminiClassificationService>();
+
+// Register Gemini Citation Service with HttpClient
+builder.Services.AddHttpClient<IGeminiCitationService, GeminiCitationService>();
+
+// Register Citation Management Service
+builder.Services.AddScoped<ICitationManagementService, CitationManagementService>();
 
 // Register Classification Services
 builder.Services.AddScoped<VUniBox.Services.Classification.IFileClassificationService, VUniBox.Services.Classification.FileClassificationService>();

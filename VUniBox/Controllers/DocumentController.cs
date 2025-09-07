@@ -29,7 +29,7 @@ namespace VUniBox.Controllers
             {
                 if (request == null)
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Request body is required", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
                 }
 
                 Documents document;
@@ -38,7 +38,7 @@ namespace VUniBox.Controllers
 
                 if (request.SaveToFolder)
                 {
-                    // Lưu vào folder theo type
+                    // Lưu vào thư mục theo type
                     document = await _documentLifecycleService.SaveDocumentAsync(
                         request.UserId,
                         request.Metadata,
@@ -64,23 +64,23 @@ namespace VUniBox.Controllers
                 {
                     Success = true,
                     Document = new DocumentDto(document), // Convert to DocumentDto
-                    Message = request.SaveToFolder ? "Document saved successfully" : "Document moved to trash",
+                    Message = request.SaveToFolder ? "Tài liệu đã được lưu thành công" : "Tài liệu đã được chuyển vào thùng rác",
                     IsInTrash = isInTrash,
                     ExpiryDate = expiryDate
                 };
 
-                return Ok(ApiResponse<DocumentSaveResponse>.Success(response, "Document processed successfully"));
+                return Ok(ApiResponse<DocumentSaveResponse>.Success(response, "Tài liệu đã được xử lý thành công"));
             }
             catch (Exception ex)
             {
                 var errorResponse = new DocumentSaveResponse
                 {
                     Success = false,
-                    Message = "Failed to save document",
+                    Message = "Lưu tài liệu không thành công",
                     Error = ex.Message
                 };
 
-                return StatusCode(500, ApiResponse<DocumentSaveResponse>.Fail($"Internal server error: {ex.Message}", 500));
+                return StatusCode(500, ApiResponse<DocumentSaveResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
 
@@ -96,7 +96,7 @@ namespace VUniBox.Controllers
             {
                 if (request == null)
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Request body is required", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
                 }
 
                 var success = await _documentLifecycleService.MoveToTrashAsync(request.DocumentId, request.UserId);
@@ -106,17 +106,17 @@ namespace VUniBox.Controllers
                     return Ok(ApiResponse<object>.Success(new { 
                         DocumentId = request.DocumentId,
                         ExpiryDate = DateTime.UtcNow.AddDays(10),
-                        Message = "Document moved to trash successfully"
-                    }, "Document moved to trash"));
+                        Message = "Tài liệu đã được chuyển vào thùng rác thành công"
+                    }, "Tài liệu đã được chuyển vào thùng rác"));
                 }
                 else
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Document not found or already in trash", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Không tìm thấy tài liệu hoặc tài liệu đã có trong thùng rác", 400));
                 }
             }
             catch (Exception ex)
             {
-                return StatusCode(500, ApiResponse<object>.Fail($"Internal server error: {ex.Message}", 500));
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
 
@@ -132,7 +132,7 @@ namespace VUniBox.Controllers
             {
                 if (request == null)
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Request body is required", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
                 }
 
                 var success = await _documentLifecycleService.RestoreFromTrashAsync(request.DocumentId, request.UserId);
@@ -141,17 +141,17 @@ namespace VUniBox.Controllers
                 {
                     return Ok(ApiResponse<object>.Success(new { 
                         DocumentId = request.DocumentId,
-                        Message = "Document restored from trash successfully"
-                    }, "Document restored from trash"));
+                        Message = "Tài liệu đã được khôi phục từ thùng rác thành công"
+                    }, "Tài liệu đã được khôi phục từ thùng rác"));
                 }
                 else
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Document not found in trash", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Không tìm thấy tài liệu trong thùng rác", 400));
                 }
             }
             catch (Exception ex)
             {
-                return StatusCode(500, ApiResponse<object>.Fail($"Internal server error: {ex.Message}", 500));
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
 
@@ -167,7 +167,7 @@ namespace VUniBox.Controllers
             {
                 if (request == null)
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Request body is required", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
                 }
 
                 var success = await _documentLifecycleService.DeletePermanentlyAsync(request.DocumentId, request.UserId);
@@ -176,17 +176,17 @@ namespace VUniBox.Controllers
                 {
                     return Ok(ApiResponse<object>.Success(new { 
                         DocumentId = request.DocumentId,
-                        Message = "Document deleted permanently"
-                    }, "Document deleted permanently"));
+                        Message = "Tài liệu đã được xóa vĩnh viễn"
+                    }, "Tài liệu đã được xóa vĩnh viễn"));
                 }
                 else
                 {
-                    return BadRequest(ApiResponse<object>.Fail("Document not found", 400));
+                    return BadRequest(ApiResponse<object>.Fail("Không tìm thấy tài liệu", 400));
                 }
             }
             catch (Exception ex)
             {
-                return StatusCode(500, ApiResponse<object>.Fail($"Internal server error: {ex.Message}", 500));
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
 
@@ -206,22 +206,22 @@ namespace VUniBox.Controllers
                 {
                     Success = true,
                     TrashDocuments = trashDocuments,
-                    Message = "Trash documents retrieved successfully",
+                    Message = "Tài liệu trong thùng rác đã được truy xuất thành công",
                     TotalCount = trashDocuments.Count
                 };
 
-                return Ok(ApiResponse<TrashResponse>.Success(response, "Trash documents retrieved"));
+                return Ok(ApiResponse<TrashResponse>.Success(response, "Tài liệu trong thùng rác đã được truy xuất"));
             }
             catch (Exception ex)
             {
                 var errorResponse = new TrashResponse
                 {
                     Success = false,
-                    Message = "Failed to get trash documents",
+                    Message = "Không thể truy xuất tài liệu trong thùng rác",
                     Error = ex.Message
                 };
 
-                return StatusCode(500, ApiResponse<TrashResponse>.Fail($"Internal server error: {ex.Message}", 500));
+                return StatusCode(500, ApiResponse<TrashResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
 
@@ -239,19 +239,26 @@ namespace VUniBox.Controllers
                 if (success)
                 {
                     return Ok(ApiResponse<object>.Success(new { 
-                        Message = "Expired trash documents cleaned successfully"
-                    }, "Trash cleaned"));
+                        Message = "Tài liệu hết hạn trong thùng rác đã được dọn dẹp thành công"
+                    }, "Thùng rác đã được dọn dẹp"));
                 }
                 else
                 {
-                    return StatusCode(500, ApiResponse<object>.Fail("Failed to clean trash", 500));
+                    return StatusCode(500, ApiResponse<object>.Fail("Không thể dọn dẹp thùng rác", 500));
                 }
             }
             catch (Exception ex)
             {
-                return StatusCode(500, ApiResponse<object>.Fail($"Internal server error: {ex.Message}", 500));
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
     }
 }
+
+
+
+
+
+
+
 

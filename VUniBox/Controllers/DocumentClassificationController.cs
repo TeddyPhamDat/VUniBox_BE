@@ -1,39 +1,34 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using VUniBox.Models.DTO.Request;
 using VUniBox.Models.DTO.Response;
-using VUniBox.Models.DTO;
 using VUniBox.Services.Classification;
-using VUniBox.Services.Metadata;
-using VUniBox.Services.DocumentManagement;
 using VUniBox.Models.Enum;
 
 namespace VUniBox.Controllers
 {
+    /// <summary>
+    /// Controller for document upload and automatic classification
+    /// Handles file upload and URL processing with auto-classification
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
-    public class ProjectWorkflowController : ControllerBase
+    public class DocumentClassificationController : ControllerBase
     {
         private readonly IClassificationService _classificationService;
-        private readonly IMetadataExtractionService _metadataExtractionService;
-        private readonly IDocumentLifecycleService _documentLifecycleService;
         private readonly IConfiguration _configuration;
         private readonly string _uploadPath;
 
-        public ProjectWorkflowController(
+        public DocumentClassificationController(
             IClassificationService classificationService,
-            IMetadataExtractionService metadataExtractionService,
-            IDocumentLifecycleService documentLifecycleService,
             IConfiguration configuration)
         {
             _classificationService = classificationService;
-            _metadataExtractionService = metadataExtractionService;
-            _documentLifecycleService = documentLifecycleService;
             _configuration = configuration;
             _uploadPath = _configuration["FileUpload:Path"] ?? "uploads";
         }
 
         /// <summary>
-        /// Step 1: Upload file and auto-classify for confirmation
+        /// Upload file and auto-classify document type
         /// </summary>
         /// <param name="file">File to upload</param>
         /// <returns>Classification result for user confirmation</returns>
@@ -90,7 +85,7 @@ namespace VUniBox.Controllers
                     return BadRequest(ApiResponse<object>.Fail($"Không thể nhận diện loại tài liệu: {classificationResult.Message}", 400));
                 }
 
-                // 4. RETURN CONFIRMATION DATA FOR UI
+                // 4. RETURN CLASSIFICATION RESULT FOR UI CONFIRMATION
                 var response = new FileUploadResponse
                 {
                     Success = true,
@@ -114,7 +109,7 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Step 1: Process URL and auto-classify for confirmation
+        /// Process URL and auto-classify document type
         /// </summary>
         /// <param name="request">URL processing request</param>
         /// <returns>Classification result for user confirmation</returns>
@@ -142,7 +137,7 @@ namespace VUniBox.Controllers
                     return BadRequest(ApiResponse<object>.Fail($"Không thể nhận diện loại tài liệu: {classificationResult.Message}", 400));
                 }
 
-                // 2. RETURN CONFIRMATION DATA FOR UI
+                // 2. RETURN CLASSIFICATION RESULT FOR UI CONFIRMATION
                 var response = new UrlProcessResponse
                 {
                     Success = true,
@@ -156,93 +151,6 @@ namespace VUniBox.Controllers
                 };
 
                 return Ok(ApiResponse<UrlProcessResponse>.Success(response, "URL đã được phân tích và nhận diện thành công"));
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
-            }
-        }
-
-        /// <summary>
-        /// Step 2: User confirms save/trash decision
-        /// </summary>
-        /// <param name="request">User confirmation request</param>
-        /// <returns>Final processing result</returns>
-        [HttpPost("confirm-action")]
-        public async Task<IActionResult> ConfirmAction([FromBody] UserConfirmationRequest request)
-        {
-            try
-            {
-                if (request == null)
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
-                }
-
-                // Extract metadata based on input type
-                DocumentMetadataDto metadata;
-                if (!string.IsNullOrEmpty(request.FilePath))
-                {
-                    // File processing
-                    metadata = await _metadataExtractionService.ExtractFromFileAsync(
-                        request.FilePath, 
-                        request.FileName ?? Path.GetFileName(request.FilePath), 
-                        request.DocumentType);
-                }
-                else if (!string.IsNullOrEmpty(request.Url))
-                {
-                    // URL processing
-                    metadata = await _metadataExtractionService.ExtractFromUrlAsync(
-                        request.Url, 
-                        request.DocumentType);
-                }
-                else
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Thiếu thông tin file hoặc URL", 400));
-                }
-
-                // Save document
-                var document = await _documentLifecycleService.SaveDocumentAsync(
-                    request.UserId,
-                    metadata,
-                    request.DocumentType,
-                    request.FilePath);
-
-                bool isInTrash = false;
-                DateTime? expiryDate = null;
-                string location = "";
-                string action = "";
-
-                if (request.SaveToFolder)
-                {
-                    // User clicked "Lưu" - save to folder
-                    location = $"Thư mục {GetDocumentTypeName(request.DocumentType)}";
-                    action = "saved";
-                }
-                else
-                {
-                    // User clicked "Không Lưu" - move to trash
-                    await _documentLifecycleService.MoveToTrashAsync(document.DocumentId, request.UserId);
-                    isInTrash = true;
-                    expiryDate = DateTime.UtcNow.AddDays(10);
-                    location = "Thùng rác";
-                    action = "moved_to_trash";
-                }
-
-                var response = new ActionConfirmationResponse
-                {
-                    Success = true,
-                    DocumentId = document.DocumentId,
-                    Action = action,
-                    Message = request.SaveToFolder 
-                        ? $"Tài liệu đã được lưu vào {location}" 
-                        : $"Tài liệu đã được chuyển vào {location} (tự động xóa sau 10 ngày)",
-                    IsInTrash = isInTrash,
-                    ExpiryDate = expiryDate,
-                    Location = location,
-                    Metadata = new CitationMetadataDto(document, metadata) // Combine document + extracted metadata
-                };
-
-                return Ok(ApiResponse<ActionConfirmationResponse>.Success(response, "Xử lý thành công"));
             }
             catch (Exception ex)
             {

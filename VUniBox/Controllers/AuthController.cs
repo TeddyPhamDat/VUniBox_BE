@@ -45,7 +45,7 @@ namespace VUniBox.Controllers
             var user = _context.Users.FirstOrDefault(u => u.Email == request.Username);
 
             if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
-                return Unauthorized(ApiResponse<object>.Fail("Invalid username or password", 401));
+                return Unauthorized(ApiResponse<object>.Fail("Tên người dùng hoặc mật khẩu không hợp lệ", 401));
 
             // Tạo access token 
             var tokens = _jwtService.GenerateTokens(user);
@@ -75,14 +75,14 @@ namespace VUniBox.Controllers
         public async Task<IActionResult> CreateRegistration([FromBody] RegisterRequest request)
         {
             if (string.IsNullOrEmpty(request.Email))
-                return BadRequest(ApiResponse<string>.Fail("Email cannot be blank", 400));
+                return BadRequest(ApiResponse<string>.Fail("Email không được để trống", 400));
 
             var existingUser = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
 
             if (existingUser != null)
             {
                 if ((bool)existingUser.IsVerified)
-                    return BadRequest(ApiResponse<string>.Fail("Email has been registered", 400));
+                    return BadRequest(ApiResponse<string>.Fail("Email đã được đăng ký", 400));
 
                 var oldOtp = await _context.OtpToken
                     .Where(o => o.Email == request.Email && o.Used == false)
@@ -91,7 +91,7 @@ namespace VUniBox.Controllers
                 var otpCreatedAtUtc = DateTime.SpecifyKind((DateTime)oldOtp.CreatedAt, DateTimeKind.Utc);
                 if (oldOtp != null && (DateTime.UtcNow - otpCreatedAtUtc).TotalMinutes < 1)
                 {
-                    return Ok(ApiResponse<string>.Success("", "OTP has been sent. Please check your email."));
+                    return Ok(ApiResponse<string>.Success("", "OTP đã được gửi. Vui lòng kiểm tra email của bạn."));
                 }
 
                 // Send a new OTP if the previous one is expired or used.
@@ -105,9 +105,9 @@ namespace VUniBox.Controllers
                 _context.OtpToken.Add(newOtp);
                 await _context.SaveChangesAsync();
 
-                await _emailSender.SendEmailAsync(request.Email, "VUniBox registration OTP", $"Your OTP code is: {newOtp.Token}");
+                await _emailSender.SendEmailAsync(request.Email, "VUniBox registration OTP", $"Mã OTP của bạn là: {newOtp.Token}");
 
-                return Ok(ApiResponse<string>.Success("", "New OTP has been sent again"));
+                return Ok(ApiResponse<string>.Success("", "OTP mới đã được gửi lại"));
             }
 
             // Create a new user and send OTP for verification.
@@ -129,9 +129,9 @@ namespace VUniBox.Controllers
             _context.OtpToken.Add(otp);
 
             await _context.SaveChangesAsync();
-            await _emailSender.SendEmailAsync(request.Email, "VUniBox registration OTP", $"Your OTP code is: {otp.Token}");
+            await _emailSender.SendEmailAsync(request.Email, "VUniBox registration OTP", $"Mã OTP của bạn là: {otp.Token}");
 
-            return Ok(ApiResponse<string>.Success("", "OTP sent to email"));
+            return Ok(ApiResponse<string>.Success("", "OTP đã được gửi đến email"));
         }
 
         /// <summary>
@@ -143,7 +143,7 @@ namespace VUniBox.Controllers
             if (string.IsNullOrEmpty(request.Email) || string.IsNullOrEmpty(request.OtpToken)
                 || string.IsNullOrEmpty(request.Password) || string.IsNullOrEmpty(request.FullName))
             {
-                return BadRequest(ApiResponse<string>.Fail("Email, OTP, Full name, and Password must not be empty", 400));
+                return BadRequest(ApiResponse<string>.Fail("Email, OTP, Họ và tên, và Mật khẩu không được để trống", 400));
             }
 
             var otp = _context.OtpToken
@@ -152,20 +152,20 @@ namespace VUniBox.Controllers
                 .FirstOrDefault();
 
             if (otp == null)
-                return BadRequest(ApiResponse<string>.Fail("Invalid or already used OTP", 400));
+                return BadRequest(ApiResponse<string>.Fail("OTP không hợp lệ hoặc đã được sử dụng", 400));
 
             var otpCreatedAtUtc = DateTime.SpecifyKind((DateTime)otp.CreatedAt, DateTimeKind.Utc);
 
             if ((DateTime.UtcNow - otpCreatedAtUtc).TotalMinutes > 1)
-                return BadRequest(ApiResponse<string>.Fail("OTP has expired", 400));
+                return BadRequest(ApiResponse<string>.Fail("OTP đã hết hạn", 400));
 
             var user = _context.Users.FirstOrDefault(u => u.Email == request.Email);
 
             if (user == null)
-                return BadRequest(ApiResponse<string>.Fail("User not found", 400));
+                return BadRequest(ApiResponse<string>.Fail("Không tìm thấy người dùng", 400));
 
             if (user.IsVerified == true)
-                return BadRequest(ApiResponse<string>.Fail("Account already verified", 400));
+                return BadRequest(ApiResponse<string>.Fail("Tài khoản đã được xác minh", 400));
 
             otp.Used = true;
             user.IsVerified = true;
@@ -199,7 +199,7 @@ namespace VUniBox.Controllers
                 Role = ((Role)user.Role).ToString()
             };
 
-            return Ok(ApiResponse<LoginResponse>.Success(response, "Registration completed successfully"));
+            return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng ký hoàn tất thành công"));
         }
 
         /// <summary>
@@ -215,12 +215,12 @@ namespace VUniBox.Controllers
             }
             catch (InvalidJwtException)
             {
-                return BadRequest(ApiResponse<string>.Fail("Invalid Token ID", 401));
+                return BadRequest(ApiResponse<string>.Fail("Mã thông báo không hợp lệ", 401));
             }
 
             var email = payload.Email;
             if (string.IsNullOrEmpty(email))
-                return BadRequest(ApiResponse<string>.Fail("Can't get email from Google", 400));
+                return BadRequest(ApiResponse<string>.Fail("Không thể lấy email từ Google", 400));
 
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
 
@@ -228,7 +228,7 @@ namespace VUniBox.Controllers
             {
                 if (user.IsVerified == false)
                 {
-                    return BadRequest(ApiResponse<string>.Fail("The account has not been authenticated via OTP", 400));
+                    return BadRequest(ApiResponse<string>.Fail("Tài khoản chưa được xác thực qua OTP", 400));
                 }
             }
             else
@@ -259,7 +259,7 @@ namespace VUniBox.Controllers
                 Role = ((Role)user.Role).ToString()
             };
 
-            return Ok(ApiResponse<LoginResponse>.Success(response, "Sign in successfully with Google"));
+            return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng nhập thành công với Google"));
         }
 
 
@@ -272,12 +272,12 @@ namespace VUniBox.Controllers
         public async Task<IActionResult> ForgotPassword([FromBody] VUniBox.Models.DTO.Request.ForgotPasswordRequest request)
         {
             if (string.IsNullOrEmpty(request.Email))
-                return BadRequest(ApiResponse<string>.Fail("Email is required", 400));
+                return BadRequest(ApiResponse<string>.Fail("Email là bắt buộc", 400));
 
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
 
             if (user == null || user.IsVerified != true)
-                return BadRequest(ApiResponse<string>.Fail("Email is not registered or verified", 400));
+                return BadRequest(ApiResponse<string>.Fail("Email chưa được đăng ký hoặc xác minh", 400));
 
             var otp = new OtpToken
             {
@@ -291,9 +291,9 @@ namespace VUniBox.Controllers
             await _context.SaveChangesAsync();
 
             // Gửi email chứa mã OTP ở đây (tùy tích hợp)
-            await _emailSender.SendEmailAsync(user.Email, "VUniBox Password Reset OTP", $"Your OTP code is: {otp.Token}");
+            await _emailSender.SendEmailAsync(user.Email, "VUniBox Password Reset OTP", $"Mã OTP của bạn là: {otp.Token}");
 
-            return Ok(ApiResponse<string>.Success("", "OTP has been sent to your email"));
+            return Ok(ApiResponse<string>.Success("", "OTP đã được gửi đến email của bạn"));
         }
 
         /// <summary>
@@ -303,7 +303,7 @@ namespace VUniBox.Controllers
         public async Task<IActionResult> ResetPassword([FromBody] VUniBox.Models.DTO.Request.ResetPasswordRequest request)
         {
             if (string.IsNullOrEmpty(request.Email) || string.IsNullOrEmpty(request.OtpToken) || string.IsNullOrEmpty(request.NewPassword))
-                return BadRequest(ApiResponse<string>.Fail("Email, OTP, and New Password are required", 400));
+                return BadRequest(ApiResponse<string>.Fail("Email, OTP và Mật khẩu mới là bắt buộc", 400));
 
             var otp = await _context.OtpToken
                 .Where(o => o.Email == request.Email && o.Token == request.OtpToken && o.Used == false)
@@ -311,11 +311,11 @@ namespace VUniBox.Controllers
                 .FirstOrDefaultAsync();
 
             if (otp == null || (DateTime.UtcNow - otp.CreatedAt.Value).TotalMinutes > 5)
-                return BadRequest(ApiResponse<string>.Fail("Invalid or expired OTP", 400));
+                return BadRequest(ApiResponse<string>.Fail("OTP không hợp lệ hoặc đã hết hạn", 400));
 
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
             if (user == null)
-                return BadRequest(ApiResponse<string>.Fail("User not found", 400));
+                return BadRequest(ApiResponse<string>.Fail("Không tìm thấy người dùng", 400));
 
             // Cập nhật mật khẩu
             user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
@@ -323,7 +323,7 @@ namespace VUniBox.Controllers
 
             await _context.SaveChangesAsync();
 
-            return Ok(ApiResponse<string>.Success("Password has been reset successfully"));
+            return Ok(ApiResponse<string>.Success("Mật khẩu đã được đặt lại thành công"));
         }
 
 

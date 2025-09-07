@@ -2,7 +2,6 @@
 #nullable disable
 using System;
 using System.Collections.Generic;
-using System.Text.Json.Serialization;
 
 namespace VUniBox.Models;
 
@@ -22,7 +21,7 @@ public partial class DocumentStorage
 
     public string AuthorName { get; set; }
 
-    public int? PublicYear { get; set; }
+    public int? Year { get; set; }
 
     public DateTime? CreatedAt { get; set; }
 
@@ -68,9 +67,7 @@ public partial class DocumentStorage
 
     public DateTime? RetrievedDate { get; set; }
 
-    [JsonIgnore]
     public virtual Documents Document { get; set; }
 
-    [JsonIgnore]
     public virtual Users User { get; set; }
 }

@@ -40,7 +40,7 @@ public partial class VUniBoxContext : DbContext
     {
         modelBuilder.Entity<Citations>(entity =>
         {
-            entity.HasKey(e => e.CitationId).HasName("PK__Citation__EAD2AD1B5DCB5C64");
+            entity.HasKey(e => e.CitationId).HasName("PK__Citation__EAD2AD1B5CA924B1");
 
             entity.Property(e => e.CitationId).HasColumnName("CitationID");
             entity.Property(e => e.CreatedAt)
@@ -53,17 +53,17 @@ public partial class VUniBoxContext : DbContext
             entity.HasOne(d => d.Document).WithMany(p => p.Citations)
                 .HasForeignKey(d => d.DocumentId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Citations__Docum__5AEE82B9");
+                .HasConstraintName("FK__Citations__Docum__628FA481");
 
             entity.HasOne(d => d.User).WithMany(p => p.Citations)
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Citations__UserI__5BE2A6F2");
+                .HasConstraintName("FK__Citations__UserI__6383C8BA");
         });
 
         modelBuilder.Entity<DocumentStorage>(entity =>
         {
-            entity.HasKey(e => e.DocumentStorageId).HasName("PK__Document__7381F341B105D5BF");
+            entity.HasKey(e => e.DocumentStorageId).HasName("PK__Document__7381F341F2FDC851");
 
             entity.Property(e => e.DocumentStorageId).HasColumnName("DocumentStorageID");
             entity.Property(e => e.AuthorName).HasMaxLength(255);
@@ -111,27 +111,28 @@ public partial class VUniBoxContext : DbContext
 
             entity.HasOne(d => d.Document).WithMany(p => p.DocumentStorage)
                 .HasForeignKey(d => d.DocumentId)
-                .HasConstraintName("FK__DocumentS__Docum__5629CD9C");
+                .HasConstraintName("FK__DocumentS__Docum__5DCAEF64");
 
             entity.HasOne(d => d.User).WithMany(p => p.DocumentStorage)
                 .HasForeignKey(d => d.UserId)
-                .HasConstraintName("FK__DocumentS__UserI__571DF1D5");
+                .HasConstraintName("FK__DocumentS__UserI__5EBF139D");
         });
 
         modelBuilder.Entity<Documents>(entity =>
         {
-            entity.HasKey(e => e.DocumentId).HasName("PK__Document__1ABEEF6F7A53CBE8");
+            entity.HasKey(e => e.DocumentId).HasName("PK__Document__1ABEEF6FEFF09C48");
 
             entity.Property(e => e.DocumentId).HasColumnName("DocumentID");
             entity.Property(e => e.Author).HasMaxLength(500);
             entity.Property(e => e.Authors).HasMaxLength(500);
+            entity.Property(e => e.CitationStyle).HasMaxLength(50);
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("(getdate())")
                 .HasColumnType("datetime");
+            entity.Property(e => e.DocumentType).HasDefaultValue(5);
             entity.Property(e => e.Doi)
                 .HasMaxLength(255)
                 .HasColumnName("DOI");
-            entity.Property(e => e.ExpiryDate).HasColumnType("datetime");
             entity.Property(e => e.FilePath).HasMaxLength(500);
             entity.Property(e => e.Isbn)
                 .HasMaxLength(50)
@@ -156,19 +157,19 @@ public partial class VUniBoxContext : DbContext
                 .HasDefaultValue("Saved");
             entity.Property(e => e.Subject).HasMaxLength(255);
             entity.Property(e => e.Title).HasMaxLength(255);
-            entity.Property(e => e.Type).HasMaxLength(20);
+            entity.Property(e => e.TrashDate).HasColumnType("datetime");
             entity.Property(e => e.UserId).HasColumnName("UserID");
             entity.Property(e => e.Volume).HasMaxLength(50);
 
             entity.HasOne(d => d.User).WithMany(p => p.Documents)
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Documents__UserI__5070F446");
+                .HasConstraintName("FK__Documents__UserI__5629CD9C");
         });
 
         modelBuilder.Entity<OtpToken>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__OtpToken__3214EC074A498A17");
+            entity.HasKey(e => e.Id).HasName("PK__OtpToken__3214EC07ADD6C52E");
 
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("(getdate())")
@@ -184,12 +185,12 @@ public partial class VUniBoxContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.OtpToken)
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.Cascade)
-                .HasConstraintName("FK__OtpToken__UserId__06CD04F7");
+                .HasConstraintName("FK__OtpToken__UserId__6EF57B66");
         });
 
         modelBuilder.Entity<Payments>(entity =>
         {
-            entity.HasKey(e => e.PaymentId).HasName("PK__Payments__9B556A587735F431");
+            entity.HasKey(e => e.PaymentId).HasName("PK__Payments__9B556A58BE37200F");
 
             entity.Property(e => e.PaymentId).HasColumnName("PaymentID");
             entity.Property(e => e.Amount).HasColumnType("decimal(10, 2)");
@@ -212,17 +213,17 @@ public partial class VUniBoxContext : DbContext
             entity.HasOne(d => d.Plan).WithMany(p => p.Payments)
                 .HasForeignKey(d => d.PlanId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Payments__PlanID__4316F928");
+                .HasConstraintName("FK__Payments__PlanID__45F365D3");
 
             entity.HasOne(d => d.User).WithMany(p => p.Payments)
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Payments__UserID__4222D4EF");
+                .HasConstraintName("FK__Payments__UserID__44FF419A");
         });
 
         modelBuilder.Entity<Plans>(entity =>
         {
-            entity.HasKey(e => e.PlanId).HasName("PK__Plans__755C22D75DE8E46E");
+            entity.HasKey(e => e.PlanId).HasName("PK__Plans__755C22D7C59D928A");
 
             entity.Property(e => e.PlanId).HasColumnName("PlanID");
             entity.Property(e => e.DurationMonths).HasDefaultValue(1);
@@ -235,7 +236,7 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<Subscriptions>(entity =>
         {
-            entity.HasKey(e => e.SubscriptionId).HasName("PK__Subscrip__9A2B24BD00DB7446");
+            entity.HasKey(e => e.SubscriptionId).HasName("PK__Subscrip__9A2B24BDD09E9B19");
 
             entity.Property(e => e.SubscriptionId).HasColumnName("SubscriptionID");
             entity.Property(e => e.PaymentId).HasColumnName("PaymentID");
@@ -247,22 +248,22 @@ public partial class VUniBoxContext : DbContext
 
             entity.HasOne(d => d.Payment).WithMany(p => p.Subscriptions)
                 .HasForeignKey(d => d.PaymentId)
-                .HasConstraintName("FK__Subscript__Payme__49C3F6B7");
+                .HasConstraintName("FK__Subscript__Payme__4CA06362");
 
             entity.HasOne(d => d.Plan).WithMany(p => p.Subscriptions)
                 .HasForeignKey(d => d.PlanId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Subscript__PlanI__48CFD27E");
+                .HasConstraintName("FK__Subscript__PlanI__4BAC3F29");
 
             entity.HasOne(d => d.User).WithMany(p => p.Subscriptions)
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__Subscript__UserI__47DBAE45");
+                .HasConstraintName("FK__Subscript__UserI__4AB81AF0");
         });
 
         modelBuilder.Entity<UsageStats>(entity =>
         {
-            entity.HasKey(e => e.StatId).HasName("PK__UsageSta__3A162D1EBC24A9BE");
+            entity.HasKey(e => e.StatId).HasName("PK__UsageSta__3A162D1EE65E2D80");
 
             entity.Property(e => e.StatId).HasColumnName("StatID");
             entity.Property(e => e.ChatbotUsed).HasDefaultValue(0);
@@ -278,14 +279,14 @@ public partial class VUniBoxContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.UsageStats)
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("FK__UsageStat__UserI__628FA481");
+                .HasConstraintName("FK__UsageStat__UserI__6A30C649");
         });
 
         modelBuilder.Entity<Users>(entity =>
         {
-            entity.HasKey(e => e.UserId).HasName("PK__Users__1788CCACB9BE558D");
+            entity.HasKey(e => e.UserId).HasName("PK__Users__1788CCAC0C01AB41");
 
-            entity.HasIndex(e => e.Email, "UQ__Users__A9D1053421A15FA9").IsUnique();
+            entity.HasIndex(e => e.Email, "UQ__Users__A9D10534B0C83046").IsUnique();
 
             entity.Property(e => e.UserId).HasColumnName("UserID");
             entity.Property(e => e.CreatedAt)
@@ -299,10 +300,11 @@ public partial class VUniBoxContext : DbContext
             entity.Property(e => e.IsActive).HasDefaultValue(true);
             entity.Property(e => e.IsVerified).HasDefaultValue(false);
             entity.Property(e => e.PasswordHash).HasMaxLength(255);
+            entity.Property(e => e.Role).HasDefaultValue(1);
 
             entity.HasOne(d => d.CurrentPlan).WithMany(p => p.Users)
                 .HasForeignKey(d => d.CurrentPlanId)
-                .HasConstraintName("FK__Users__CurrentPl__3C69FB99");
+                .HasConstraintName("FK__Users__CurrentPl__3F466844");
         });
 
         OnModelCreatingPartial(modelBuilder);
