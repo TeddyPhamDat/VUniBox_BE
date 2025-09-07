@@ -15,18 +15,6 @@ using System.Text.Json.Serialization;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 Console.InputEncoding = System.Text.Encoding.UTF8;
 
-// Run citation test before starting the application
-Console.WriteLine("=== Testing Citation Generation ===");
-try
-{
-    await VUniBox.TestCitation.TestGenerateCitation();
-    Console.WriteLine("=== Citation Test Completed ===\n");
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"Citation test failed: {ex.Message}");
-}
-
 var builder = WebApplication.CreateBuilder(args);
 
 // Register all required services for the application, including controllers, Swagger, authentication, and custom services.
