@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text; // Add this using directive at the top of the file
 using VUniBox.Services.Classification; // Add this using directive
 using VUniBox.Services.Citation; // Add this using directive
+using VUniBox.Services.Chatbot; // Add this using directive
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
@@ -90,6 +91,23 @@ builder.Services.AddHttpClient<IGeminiClassificationService, GeminiClassificatio
 // Register Gemini Citation Service with HttpClient
 builder.Services.AddHttpClient<IGeminiCitationService, GeminiCitationService>();
 
+// Register Gemini Chatbot Service with HttpClient
+builder.Services.AddHttpClient<IGeminiChatbotService, GeminiChatbotService>();
+
+// Register Session for chat history storage
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddSession(options =>
+{
+    options.IdleTimeout = TimeSpan.FromHours(2); // Session expires after 2 hours of inactivity
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+    options.Cookie.Name = "VUniBox.Session";
+});
+
+// Register Session Chat Service
+builder.Services.AddScoped<SessionChatService>();
+builder.Services.AddHttpContextAccessor();
+
 // Register Citation Management Service
 builder.Services.AddScoped<ICitationManagementService, CitationManagementService>();
 
@@ -157,6 +175,7 @@ app.UseSwaggerUI(c =>
 app.UseHttpsRedirection();
 
 app.UseCors("AllowAll");
+app.UseSession(); // Enable session middleware
 app.UseAuthentication();
 app.UseAuthorization();
 
