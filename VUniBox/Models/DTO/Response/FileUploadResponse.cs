@@ -7,15 +7,45 @@ namespace VUniBox.Models.DTO.Response
     /// </summary>
     public class FileUploadResponse
     {
+        /// <summary>
+        /// Gets or sets a value indicating whether the operation was successful.
+        /// </summary>
         public bool Success { get; set; }
+        /// <summary>
+        /// Gets or sets the temporary file path of the uploaded file.
+        /// </summary>
         public string FilePath { get; set; } = string.Empty;
+        /// <summary>
+        /// Gets or sets the original file name of the uploaded file.
+        /// </summary>
         public string OriginalFileName { get; set; } = string.Empty;
+        /// <summary>
+        /// Gets or sets the size of the uploaded file in bytes.
+        /// </summary>
         public long FileSize { get; set; }
+        /// <summary>
+        /// Gets or sets the detected document type.
+        /// </summary>
         public DocumentType DetectedType { get; set; }
+        /// <summary>
+        /// Gets or sets the human-readable name of the detected document type.
+        /// </summary>
         public string TypeName { get; set; } = string.Empty;
+        /// <summary>
+        /// Gets or sets a confirmation message to be displayed to the user.
+        /// </summary>
         public string ConfirmationMessage { get; set; } = string.Empty;
-        public string Question { get; set; } = string.Empty; // "B?n c� mu?n l?u file n�y kh�ng?"
-        public string Subtitle { get; set; } = string.Empty; // "B?n c� th? l?u ho?c kh�ng l?u file trong thao t�c"
+        /// <summary>
+        /// Gets or sets a question to prompt the user for a decision (e.g., "Bạn có muốn lưu file này không?").
+        /// </summary>
+        public string Question { get; set; } = string.Empty; // "B?n c mu?n l?u file ny khng?"
+        /// <summary>
+        /// Gets or sets a subtitle providing additional context for the user's decision (e.g., "Bạn có thể lưu hoặc không lưu file trong thao tác").
+        /// </summary>
+        public string Subtitle { get; set; } = string.Empty; // "B?n c th? l?u ho?c khng l?u file trong thao tc"
+        /// <summary>
+        /// Gets or sets a temporary ID for tracking the session.
+        /// </summary>
         public string TempId { get; set; } = string.Empty;
     }
 }

@@ -3,25 +3,40 @@ using VUniBox.Models;
 using VUniBox.Models.DTO.Request;
 using VUniBox.Models.DTO.Response;
 using VUniBox.Services.DocumentManagement;
+using VUniBox.Services.Citation;
+using System;
 
 namespace VUniBox.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    /// <summary>
+    /// Controller for managing documents within the VUniBox application.
+    /// Handles operations such as saving, moving to trash, restoring, permanent deletion, and retrieval of documents.
+    /// </summary>
     public class DocumentController : ControllerBase
     {
         private readonly IDocumentLifecycleService _documentLifecycleService;
+        private readonly ICitationManagementService _citationManagementService;
 
-        public DocumentController(IDocumentLifecycleService documentLifecycleService)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="DocumentController"/> class.
+        /// </summary>
+        /// <param name="documentLifecycleService">The document lifecycle service.</param>
+        /// <param name="citationManagementService">The citation management service.</param>
+        public DocumentController(
+            IDocumentLifecycleService documentLifecycleService,
+            ICitationManagementService citationManagementService)
         {
             _documentLifecycleService = documentLifecycleService;
+            _citationManagementService = citationManagementService;
         }
 
         /// <summary>
-        /// Save document to folder or move to trash based on user choice
+        /// Saves a document to a folder or moves it to trash based on user choice.
         /// </summary>
-        /// <param name="request">Document save request</param>
-        /// <returns>Save result</returns>
+        /// <param name="request">The document save request.</param>
+        /// <returns>An <see cref="IActionResult"/> with the save result.</returns>
         [HttpPost("save")]
         public async Task<IActionResult> SaveDocument([FromBody] DocumentSaveRequest request)
         {
@@ -85,10 +100,10 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Move document to trash
+        /// Moves a document to the trash.
         /// </summary>
-        /// <param name="request">Document trash request</param>
-        /// <returns>Trash result</returns>
+        /// <param name="request">The document trash request.</param>
+        /// <returns>An <see cref="IActionResult"/> with the trash result.</returns>
         [HttpPost("trash")]
         public async Task<IActionResult> MoveToTrash([FromBody] DocumentTrashRequest request)
         {
@@ -121,10 +136,10 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Restore document from trash
+        /// Restores a document from the trash.
         /// </summary>
-        /// <param name="request">Document trash request</param>
-        /// <returns>Restore result</returns>
+        /// <param name="request">The document trash request.</param>
+        /// <returns>An <see cref="IActionResult"/> with the restore result.</returns>
         [HttpPost("restore")]
         public async Task<IActionResult> RestoreFromTrash([FromBody] DocumentTrashRequest request)
         {
@@ -156,10 +171,10 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Delete document permanently
+        /// Deletes a document permanently.
         /// </summary>
-        /// <param name="request">Document trash request</param>
-        /// <returns>Delete result</returns>
+        /// <param name="request">The document trash request.</param>
+        /// <returns>An <see cref="IActionResult"/> with the delete result.</returns>
         [HttpDelete("permanent")]
         public async Task<IActionResult> DeletePermanently([FromBody] DocumentTrashRequest request)
         {
@@ -191,10 +206,209 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Get all documents in trash for a user
+        /// Retrieves documents by folder/category type with metadata and citations.
         /// </summary>
-        /// <param name="userId">User ID</param>
-        /// <returns>Trash documents</returns>
+        /// <param name="userId">The ID of the user.</param>
+        /// <param name="folderType">The type of folder (Book, Word, Newspaper, PDF, Research, Others).</param>
+        /// <param name="page">The page number (default: 1).</param>
+        /// <param name="pageSize">The page size (default: 10).</param>
+        /// <returns>An <see cref="IActionResult"/> with documents in the specified folder, including metadata and citations.</returns>
+        [HttpGet("folder/{userId}/{folderType}")]
+        public async Task<IActionResult> GetDocumentsByFolder(int userId, string folderType, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+        {
+            try
+            {
+                var (documents, totalCount) = await _documentLifecycleService.GetDocumentsByFolderWithCountAsync(userId, folderType, page, pageSize);
+
+                // Create documents with citation data
+                var documentsWithCitations = new List<DocumentWithCitationDto>();
+                
+                foreach (var document in documents)
+                {
+                    var docDto = new DocumentWithCitationDto(document);
+                    
+                    // Always get the latest citations from database to ensure fresh data
+                    var latestDocument = await _documentLifecycleService.GetDocumentByIdAsync(document.DocumentId);
+                    var existingCitations = latestDocument?.Citations?.ToList() ?? new List<Citations>();
+                    
+                    // If no citations exist, generate APA citation automatically
+                    if (!existingCitations.Any())
+                    {
+                        try
+                        {
+                            var newCitation = await _citationManagementService.GenerateCitationAsync(document.DocumentId, "APA");
+                            
+                            if (newCitation != null)
+                            {
+                                // Create citation entity from response to add to the list
+                                existingCitations = new List<Citations>
+                                {
+                                    new Citations
+                                    {
+                                        CitationId = 0, // Will be assigned by DB
+                                        DocumentId = newCitation.DocumentId,
+                                        UserId = document.UserId,
+                                        Style = newCitation.Style,
+                                        FormattedCitation = newCitation.FormattedCitation,
+                                        InTextCitation = newCitation.InTextCitation,
+                                        CreatedAt = DateTime.UtcNow
+                                    }
+                                };
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // Log citation generation error but continue
+                            Console.WriteLine($"Failed to generate citation for document {document.DocumentId}: {ex.Message}");
+                        }
+                    }
+                    
+                    // Add citation to DTO (single citation only)
+                    docDto.AddCitation(existingCitations);
+                    documentsWithCitations.Add(docDto);
+                }
+
+                var response = new FolderDocumentsWithCitationResponse
+                {
+                    Success = true,
+                    FolderType = folderType,
+                    Documents = documentsWithCitations,
+                    Message = $"Tài liệu trong thư mục {folderType} được truy xuất thành công với citation",
+                    TotalCount = totalCount,
+                    CurrentPage = page,
+                    PageSize = pageSize
+                };
+
+                return Ok(ApiResponse<FolderDocumentsWithCitationResponse>.Success(response, $"Thư mục {folderType} được truy xuất với citation"));
+            }
+            catch (Exception ex)
+            {
+                var errorResponse = new FolderDocumentsWithCitationResponse
+                {
+                    Success = false,
+                    FolderType = folderType,
+                    Message = $"Không thể truy xuất thư mục {folderType}",
+                    Error = ex.Message
+                };
+
+                return StatusCode(500, ApiResponse<FolderDocumentsWithCitationResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Retrieves a summary of folders with document counts by type.
+        /// </summary>
+        /// <param name="userId">The ID of the user.</param>
+        /// <returns>An <see cref="IActionResult"/> with the folder summary and document counts.</returns>
+        [HttpGet("folders/{userId}")]
+        public async Task<IActionResult> GetFolderSummary(int userId)
+        {
+            try
+            {
+                var folderSummary = await _documentLifecycleService.GetFolderSummaryAsync(userId);
+
+                var response = new FolderSummaryResponse
+                {
+                    Success = true,
+                    FolderCounts = folderSummary,
+                    Message = "Thống kê thư mục được truy xuất thành công",
+                    TotalDocuments = folderSummary.Values.Sum()
+                };
+
+                return Ok(ApiResponse<FolderSummaryResponse>.Success(response, "Thống kê thư mục được truy xuất"));
+            }
+            catch (Exception ex)
+            {
+                var errorResponse = new FolderSummaryResponse
+                {
+                    Success = false,
+                    Message = "Không thể truy xuất thống kê thư mục",
+                    Error = ex.Message
+                };
+
+                return StatusCode(500, ApiResponse<FolderSummaryResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Retrieves all saved documents for a user.
+        /// </summary>
+        /// <param name="userId">The ID of the user.</param>
+        /// <returns>An <see cref="IActionResult"/> with the saved documents.</returns>
+        [HttpGet("saved/{userId}")]
+        public async Task<IActionResult> GetSavedDocuments(int userId)
+        {
+            try
+            {
+                // Lấy tất cả documents đã saved (status = Saved)
+                var savedDocuments = await _documentLifecycleService.GetSavedDocumentsAsync(userId);
+
+                var response = new SavedDocumentsResponse
+                {
+                    Success = true,
+                    SavedDocuments = savedDocuments.Select(d => new DocumentDto(d)).ToList(),
+                    Message = "Tài liệu đã lưu được truy xuất thành công",
+                    TotalCount = savedDocuments.Count
+                };
+
+                return Ok(ApiResponse<SavedDocumentsResponse>.Success(response, "Tài liệu đã lưu được truy xuất"));
+            }
+            catch (Exception ex)
+            {
+                var errorResponse = new SavedDocumentsResponse
+                {
+                    Success = false,
+                    Message = "Không thể truy xuất tài liệu đã lưu",
+                    Error = ex.Message
+                };
+
+                return StatusCode(500, ApiResponse<SavedDocumentsResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Retrieves all documents (saved and trash) for a user with optional filtering by status and type.
+        /// </summary>
+        /// <param name="userId">The ID of the user.</param>
+        /// <param name="status">Optional: The document status to filter by.</param>
+        /// <param name="type">Optional: The document type to filter by.</param>
+        /// <returns>An <see cref="IActionResult"/> with the filtered documents.</returns>
+        [HttpGet("all/{userId}")]
+        public async Task<IActionResult> GetAllDocuments(int userId, [FromQuery] string? status = null, [FromQuery] string? type = null)
+        {
+            try
+            {
+                var allDocuments = await _documentLifecycleService.GetAllDocumentsAsync(userId, status, type);
+
+                var response = new AllDocumentsResponse
+                {
+                    Success = true,
+                    Documents = allDocuments.Select(d => new DocumentDto(d)).ToList(),
+                    Message = "Tất cả tài liệu được truy xuất thành công",
+                    TotalCount = allDocuments.Count,
+                    FilteredBy = new { Status = status, Type = type }
+                };
+
+                return Ok(ApiResponse<AllDocumentsResponse>.Success(response, "Tất cả tài liệu được truy xuất"));
+            }
+            catch (Exception ex)
+            {
+                var errorResponse = new AllDocumentsResponse
+                {
+                    Success = false,
+                    Message = "Không thể truy xuất tài liệu",
+                    Error = ex.Message
+                };
+
+                return StatusCode(500, ApiResponse<AllDocumentsResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Retrieves all documents currently in the trash for a user.
+        /// </summary>
+        /// <param name="userId">The ID of the user.</param>
+        /// <returns>An <see cref="IActionResult"/> with the trash documents.</returns>
         [HttpGet("trash/{userId}")]
         public async Task<IActionResult> GetTrashDocuments(int userId)
         {
@@ -226,9 +440,9 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Clean expired documents from trash (Admin only)
+        /// Cleans up expired documents from the trash (Admin only).
         /// </summary>
-        /// <returns>Clean result</returns>
+        /// <returns>An <see cref="IActionResult"/> indicating the cleanup result.</returns>
         [HttpPost("clean-trash")]
         public async Task<IActionResult> CleanExpiredTrash()
         {

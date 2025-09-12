@@ -18,21 +18,30 @@ namespace VUniBox.Controllers
     {
         private readonly IMetadataExtractionService _metadataExtractionService;
         private readonly IDocumentLifecycleService _documentLifecycleService;
+        private readonly IConfiguration _configuration;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="DocumentMetadataController"/> class.
+        /// </summary>
+        /// <param name="metadataExtractionService">The metadata extraction service.</param>
+        /// <param name="documentLifecycleService">The document lifecycle service.</param>
+        /// <param name="configuration">The application configuration.</param>
         public DocumentMetadataController(
             IMetadataExtractionService metadataExtractionService,
-            IDocumentLifecycleService documentLifecycleService)
+            IDocumentLifecycleService documentLifecycleService,
+            IConfiguration configuration)
         {
             _metadataExtractionService = metadataExtractionService;
             _documentLifecycleService = documentLifecycleService;
+            _configuration = configuration;
         }
 
         /// <summary>
-        /// Extract metadata and save document based on user confirmation
-        /// This is the final step after classification confirmation
+        /// Extracts metadata and saves the document based on user confirmation.
+        /// This is the final step after classification confirmation.
         /// </summary>
-        /// <param name="request">User confirmation request with document details</param>
-        /// <returns>Complete metadata extraction and document save result</returns>
+        /// <param name="request">The user confirmation request with document details.</param>
+        /// <returns>An <see cref="IActionResult"/> with the complete metadata extraction and document save result.</returns>
         [HttpPost("extract-and-save")]
         public async Task<IActionResult> ExtractMetadataAndSave([FromBody] UserConfirmationRequest request)
         {
@@ -45,6 +54,8 @@ namespace VUniBox.Controllers
 
                 // 1. EXTRACT METADATA based on input type
                 DocumentMetadataDto metadata;
+                string? finalFilePath = null;
+                
                 if (!string.IsNullOrEmpty(request.FilePath))
                 {
                     // File processing - extract metadata from uploaded file
@@ -52,6 +63,34 @@ namespace VUniBox.Controllers
                         request.FilePath, 
                         request.FileName ?? Path.GetFileName(request.FilePath), 
                         request.DocumentType);
+
+                    // Handle file movement from temp to permanent location
+                    if (request.SaveToFolder)
+                    {
+                        // Move file from temp to permanent uploads folder
+                        var uploadsPath = _configuration["FileUpload:Path"] ?? "uploads";
+                        if (!Directory.Exists(uploadsPath))
+                        {
+                            Directory.CreateDirectory(uploadsPath);
+                        }
+
+                        var fileName = Path.GetFileName(request.FilePath);
+                        finalFilePath = Path.Combine(uploadsPath, fileName);
+
+                        // Move file from temp to uploads
+                        if (System.IO.File.Exists(request.FilePath))
+                        {
+                            System.IO.File.Move(request.FilePath, finalFilePath);
+                        }
+                    }
+                    else
+                    {
+                        // User chose not to save - delete temp file
+                        if (System.IO.File.Exists(request.FilePath))
+                        {
+                            System.IO.File.Delete(request.FilePath);
+                        }
+                    }
                 }
                 else if (!string.IsNullOrEmpty(request.Url))
                 {
@@ -70,7 +109,7 @@ namespace VUniBox.Controllers
                     request.UserId,
                     metadata,
                     request.DocumentType,
-                    request.FilePath);
+                    finalFilePath ?? request.Url); // Use final file path or URL
 
                 // 3. HANDLE USER DECISION (Save to folder or Move to trash)
                 bool isInTrash = false;
@@ -118,11 +157,11 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Extract metadata only (without saving document)
-        /// Useful for preview or testing metadata extraction
+        /// Extracts metadata only, without saving the document.
+        /// This is useful for previewing or testing metadata extraction.
         /// </summary>
-        /// <param name="request">Metadata extraction request</param>
-        /// <returns>Extracted metadata only</returns>
+        /// <param name="request">The metadata extraction request.</param>
+        /// <returns>An <see cref="IActionResult"/> with the extracted metadata.</returns>
         [HttpPost("extract-metadata")]
         public async Task<IActionResult> ExtractMetadata([FromBody] MetadataExtractionRequest request)
         {
@@ -164,12 +203,12 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Get document metadata by document ID
-        /// Useful for retrieving metadata of already saved documents
+        /// Retrieves document metadata by document ID.
+        /// This is useful for retrieving metadata of already saved documents.
         /// </summary>
-        /// <param name="documentId">Document ID</param>
-        /// <param name="userId">User ID for security check</param>
-        /// <returns>Document metadata</returns>
+        /// <param name="documentId">The ID of the document.</param>
+        /// <param name="userId">The ID of the user for security checks.</param>
+        /// <returns>An <see cref="IActionResult"/> with the document metadata.</returns>
         [HttpGet("metadata/{documentId}")]
         public async Task<IActionResult> GetDocumentMetadata(int documentId, [FromQuery] int userId)
         {
@@ -188,8 +227,10 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Get Vietnamese name for document type
+        /// Gets the Vietnamese name for a given document type.
         /// </summary>
+        /// <param name="documentType">The document type enum value.</param>
+        /// <returns>The Vietnamese string representation of the document type.</returns>
         private string GetDocumentTypeName(DocumentType documentType)
         {
             return documentType switch
@@ -206,13 +247,25 @@ namespace VUniBox.Controllers
     }
 
     /// <summary>
-    /// Request DTO for metadata extraction only
+    /// Represents a request for metadata extraction only.
     /// </summary>
     public class MetadataExtractionRequest
     {
+        /// <summary>
+        /// Gets or sets the file path for file-based metadata extraction.
+        /// </summary>
         public string? FilePath { get; set; }
+        /// <summary>
+        /// Gets or sets the file name for file-based metadata extraction.
+        /// </summary>
         public string? FileName { get; set; }
+        /// <summary>
+        /// Gets or sets the URL for URL-based metadata extraction.
+        /// </summary>
         public string? Url { get; set; }
+        /// <summary>
+        /// Gets or sets the document type for classification context.
+        /// </summary>
         public DocumentType DocumentType { get; set; }
     }
 }

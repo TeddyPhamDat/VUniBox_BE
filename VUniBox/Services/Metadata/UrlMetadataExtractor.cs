@@ -5,15 +5,28 @@ using VUniBox.Models.DTO;
 
 namespace VUniBox.Services.Metadata
 {
+    /// <summary>
+    /// Service for extracting metadata from URLs based on document type.
+    /// </summary>
     public class UrlMetadataExtractor : IUrlMetadataExtractor
     {
         private readonly HttpClient _httpClient;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UrlMetadataExtractor"/> class.
+        /// </summary>
+        /// <param name="httpClient">The HTTP client to use for web requests.</param>
         public UrlMetadataExtractor(HttpClient httpClient)
         {
             _httpClient = httpClient;
         }
 
+        /// <summary>
+        /// Extracts metadata from a given URL based on the specified document type.
+        /// </summary>
+        /// <param name="url">The URL to extract metadata from.</param>
+        /// <param name="documentType">The classified document type.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractMetadataAsync(string url, DocumentType documentType)
         {
             try
@@ -41,6 +54,11 @@ namespace VUniBox.Services.Metadata
             }
         }
 
+        /// <summary>
+        /// Extracts metadata specifically from a research-oriented website.
+        /// </summary>
+        /// <param name="url">The URL of the research site.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractFromResearchSiteAsync(string url)
         {
             var metadata = await ExtractGenericMetadataAsync(url);
@@ -85,6 +103,11 @@ namespace VUniBox.Services.Metadata
             return metadata;
         }
 
+        /// <summary>
+        /// Extracts metadata specifically from a book-related website.
+        /// </summary>
+        /// <param name="url">The URL of the book site.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractFromBookSiteAsync(string url)
         {
             var metadata = await ExtractGenericMetadataAsync(url);
@@ -137,8 +160,10 @@ namespace VUniBox.Services.Metadata
                     "meta[property='book:publisher']",
                     "meta[name='publisher']",
                     "meta[property='og:site_name']",
-                    ".publisher",
-                    ".imprint"
+                    "*[@class='publisher']",
+                    "*[contains(@class, 'publisher')]",
+                    "*[@class='imprint']",
+                    "*[contains(@class, 'imprint')]"
                 };
 
                 foreach (var selector in publisherSelectors)
@@ -162,8 +187,10 @@ namespace VUniBox.Services.Metadata
                     "meta[property='book:author']",
                     "meta[name='author']",
                     "meta[property='author']",
-                    ".author",
-                    ".authors"
+                    "*[@class='author']",
+                    "*[contains(@class, 'author')]",
+                    "*[@class='authors']",
+                    "*[contains(@class, 'authors')]"
                 };
 
                 var authorsList = new List<string>();
@@ -199,7 +226,9 @@ namespace VUniBox.Services.Metadata
                     "meta[name='citation_publication_date']",
                     "meta[name='citation_date']",
                     "meta[property='book:release_date']",
-                    ".publication-date"
+                    "*[@class='publication-date']",
+                    "*[contains(@class, 'publication-date')]",
+                    "*[contains(@class, 'date')]"
                 };
 
                 foreach (var selector in dateSelectors)
@@ -239,6 +268,11 @@ namespace VUniBox.Services.Metadata
             return metadata;
         }
 
+        /// <summary>
+        /// Extracts metadata specifically from a news-related website.
+        /// </summary>
+        /// <param name="url">The URL of the news site.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractFromNewsSiteAsync(string url)
         {
             var metadata = await ExtractGenericMetadataAsync(url);
@@ -255,7 +289,10 @@ namespace VUniBox.Services.Metadata
                     "meta[property='article:published_time']",
                     "meta[name='article:published_time']",
                     "time[datetime]",
-                    ".publish-date"
+                    "*[@class='publish-date']",
+                    "*[contains(@class, 'publish-date')]",
+                    "*[contains(@class, 'date')]",
+                    "*[contains(@class, 'published')]"
                 };
 
                 foreach (var selector in dateSelectors)
@@ -281,8 +318,10 @@ namespace VUniBox.Services.Metadata
                     "meta[name='article:author']",
                     "meta[property='article:author']",
                     "meta[name='author']",
-                    ".author",
-                    ".byline"
+                    "*[@class='author']",
+                    "*[contains(@class, 'author')]",
+                    "*[@class='byline']",
+                    "*[contains(@class, 'byline')]"
                 };
 
                 foreach (var selector in authorSelectors)
@@ -328,6 +367,11 @@ namespace VUniBox.Services.Metadata
             return metadata;
         }
 
+        /// <summary>
+        /// Extracts generic metadata from any given URL by parsing common HTML meta tags.
+        /// </summary>
+        /// <param name="url">The URL to extract metadata from.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted generic metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractGenericMetadataAsync(string url)
         {
             var metadata = new DocumentMetadataDto { URL = url };
@@ -439,6 +483,12 @@ namespace VUniBox.Services.Metadata
             return metadata;
         }
 
+        /// <summary>
+        /// Retrieves the HTML content of a given URL.
+        /// </summary>
+        /// <param name="url">The URL to fetch content from.</param>
+        /// <returns>The HTML content as a string.</returns>
+        /// <exception cref="Exception">Thrown if fetching the page content fails.</exception>
         private async Task<string> GetPageContentAsync(string url)
         {
             try
@@ -458,6 +508,12 @@ namespace VUniBox.Services.Metadata
             }
         }
 
+        /// <summary>
+        /// Gets the value of a specified HTML attribute from a node.
+        /// </summary>
+        /// <param name="node">The HTML node.</param>
+        /// <param name="attributeName">The name of the attribute.</param>
+        /// <returns>The attribute value, or null if the attribute is not found.</returns>
         private string? GetAttributeValue(HtmlNode node, string attributeName)
         {
             return node.GetAttributeValue(attributeName, null);

@@ -8,17 +8,30 @@ namespace VUniBox.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    /// <summary>
+    /// Controller for handling chatbot interactions.
+    /// </summary>
     public class ChatbotController : ControllerBase
     {
         private readonly IGeminiChatbotService _chatbotService;
         private readonly SessionChatService _sessionChatService;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ChatbotController"/> class.
+        /// </summary>
+        /// <param name="chatbotService">The Gemini chatbot service.</param>
+        /// <param name="sessionChatService">The session chat service.</param>
         public ChatbotController(IGeminiChatbotService chatbotService, SessionChatService sessionChatService)
         {
             _chatbotService = chatbotService;
             _sessionChatService = sessionChatService;
         }
 
+        /// <summary>
+        /// Sends a message to the chatbot and receives a response.
+        /// </summary>
+        /// <param name="request">The chat message request containing the user's message.</param>
+        /// <returns>An <see cref="IActionResult"/> with the chatbot's response and message count.</returns>
         [HttpPost("send")]
         public async Task<IActionResult> SendMessage([FromBody] ChatMessageRequest request)
         {
@@ -45,6 +58,10 @@ namespace VUniBox.Controllers
             });
         }
 
+        /// <summary>
+        /// Clears the chat history for the current session.
+        /// </summary>
+        /// <returns>An <see cref="IActionResult"/> indicating the chat history has been cleared.</returns>
         [HttpPost("clear")]
         public IActionResult ClearHistory()
         {
@@ -52,11 +69,16 @@ namespace VUniBox.Controllers
             return Ok(new { message = "Chat history cleared." });
         }
 
+        /// <summary>
+        /// Retrieves the chat history for the current session.
+        /// </summary>
+        /// <returns>An <see cref="IActionResult"/> with the chat history and message count.</returns>
         [HttpGet("history")]
         public IActionResult GetHistory()
         {
             var history = _sessionChatService.GetChatHistory();
-            var simpleHistory = history.Select(h => new {
+            var simpleHistory = history.Select(h => new
+            {
                 role = h.Role,
                 message = h.Parts?.FirstOrDefault()?.Text ?? ""
             }).ToList();
@@ -65,14 +87,29 @@ namespace VUniBox.Controllers
         }
     }
 
+    /// <summary>
+    /// Represents a request to send a message to the chatbot.
+    /// </summary>
     public class ChatMessageRequest
     {
+        /// <summary>
+        /// Gets or sets the message text.
+        /// </summary>
         public string Message { get; set; }
     }
 
+    /// <summary>
+    /// Represents a simplified chat turn with a role and text.
+    /// </summary>
     public class SimpleChatTurn
     {
+        /// <summary>
+        /// Gets or sets the role of the chat participant (e.g., "user" or "model").
+        /// </summary>
         public string Role { get; set; }
+        /// <summary>
+        /// Gets or sets the text of the message.
+        /// </summary>
         public string Text { get; set; }
     }
 }

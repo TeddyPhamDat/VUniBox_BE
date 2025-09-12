@@ -18,6 +18,11 @@ namespace VUniBox.Controllers
         private readonly IConfiguration _configuration;
         private readonly string _uploadPath;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="DocumentClassificationController"/> class.
+        /// </summary>
+        /// <param name="classificationService">The classification service.</param>
+        /// <param name="configuration">The application configuration.</param>
         public DocumentClassificationController(
             IClassificationService classificationService,
             IConfiguration configuration)
@@ -25,13 +30,19 @@ namespace VUniBox.Controllers
             _classificationService = classificationService;
             _configuration = configuration;
             _uploadPath = _configuration["FileUpload:Path"] ?? "uploads";
+            
+            // Ensure upload path exists
+            if (!Directory.Exists(_uploadPath))
+            {
+                Directory.CreateDirectory(_uploadPath);
+            }
         }
 
         /// <summary>
-        /// Upload file and auto-classify document type
+        /// Uploads a file and automatically classifies its document type.
         /// </summary>
-        /// <param name="file">File to upload</param>
-        /// <returns>Classification result for user confirmation</returns>
+        /// <param name="file">The file to upload.</param>
+        /// <returns>A <see cref="FileUploadResponse"/> containing the classification result for user confirmation.</returns>
         [HttpPost("upload-file")]
         public async Task<IActionResult> UploadFile(IFormFile file)
         {
@@ -57,16 +68,17 @@ namespace VUniBox.Controllers
                     return BadRequest(ApiResponse<object>.Fail($"Loại file {fileExtension} không được hỗ trợ", 400));
                 }
 
-                // 2. UPLOAD FILE
-                if (!Directory.Exists(_uploadPath))
+                // 2. SAVE FILE TO TEMPORARY LOCATION FOR CLASSIFICATION
+                var tempPath = Path.Combine(_uploadPath, "temp");
+                if (!Directory.Exists(tempPath))
                 {
-                    Directory.CreateDirectory(_uploadPath);
+                    Directory.CreateDirectory(tempPath);
                 }
 
                 var fileName = $"{Guid.NewGuid()}_{file.FileName}";
-                var filePath = Path.Combine(_uploadPath, fileName);
+                var tempFilePath = Path.Combine(tempPath, fileName);
 
-                using (var stream = new FileStream(filePath, FileMode.Create))
+                using (var stream = new FileStream(tempFilePath, FileMode.Create))
                 {
                     await file.CopyToAsync(stream);
                 }
@@ -82,14 +94,19 @@ namespace VUniBox.Controllers
 
                 if (!classificationResult.Success)
                 {
+                    // Clean up temp file if classification fails
+                    if (System.IO.File.Exists(tempFilePath))
+                    {
+                        System.IO.File.Delete(tempFilePath);
+                    }
                     return BadRequest(ApiResponse<object>.Fail($"Không thể nhận diện loại tài liệu: {classificationResult.Message}", 400));
                 }
 
-                // 4. RETURN CLASSIFICATION RESULT FOR UI CONFIRMATION
+                // 4. RETURN CLASSIFICATION RESULT FOR UI CONFIRMATION  
                 var response = new FileUploadResponse
                 {
                     Success = true,
-                    FilePath = filePath,
+                    FilePath = tempFilePath, // Temporary file path
                     OriginalFileName = file.FileName,
                     FileSize = file.Length,
                     DetectedType = classificationResult.DocumentType,
@@ -109,10 +126,10 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Process URL and auto-classify document type
+        /// Processes a URL and automatically classifies its document type.
         /// </summary>
-        /// <param name="request">URL processing request</param>
-        /// <returns>Classification result for user confirmation</returns>
+        /// <param name="request">The URL processing request.</param>
+        /// <returns>A <see cref="UrlProcessResponse"/> containing the classification result for user confirmation.</returns>
         [HttpPost("process-url")]
         public async Task<IActionResult> ProcessUrl([FromBody] UrlInputRequest request)
         {
@@ -159,8 +176,48 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Get Vietnamese name for document type
+        /// Cleans up temporary files older than the specified number of hours.
         /// </summary>
+        /// <param name="hoursOld">The age in hours after which temporary files should be deleted (default: 24).</param>
+        /// <returns>An <see cref="IActionResult"/> indicating the cleanup result.</returns>
+        [HttpPost("cleanup-temp")]
+        public IActionResult CleanupTempFiles(int hoursOld = 24)
+        {
+            try
+            {
+                var tempPath = Path.Combine(_uploadPath, "temp");
+                if (!Directory.Exists(tempPath))
+                {
+                    return Ok(ApiResponse<object>.Success(null, "Temp folder does not exist"));
+                }
+
+                var cutoffTime = DateTime.Now.AddHours(-hoursOld);
+                var tempFiles = Directory.GetFiles(tempPath);
+                int deletedCount = 0;
+
+                foreach (var file in tempFiles)
+                {
+                    var fileInfo = new FileInfo(file);
+                    if (fileInfo.CreationTime < cutoffTime)
+                    {
+                        System.IO.File.Delete(file);
+                        deletedCount++;
+                    }
+                }
+
+                return Ok(ApiResponse<object>.Success(null, $"Cleaned up {deletedCount} temporary files"));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Cleanup error: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Gets the Vietnamese name for a given document type.
+        /// </summary>
+        /// <param name="documentType">The document type enum value.</param>
+        /// <returns>The Vietnamese string representation of the document type.</returns>
         private string GetDocumentTypeName(DocumentType documentType)
         {
             return documentType switch

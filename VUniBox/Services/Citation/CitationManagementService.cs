@@ -33,19 +33,54 @@ namespace VUniBox.Services.Citation
 
                 Console.WriteLine($"[CitationManagementService] Found document: ID={document.DocumentId}, Title={document.Title}");
 
-                // Check if citation already exists for this document and style
+                // Check if citation already exists for this document
                 var existingCitation = await _context.Citations
-                    .FirstOrDefaultAsync(c => c.DocumentId == documentId && c.Style == citationStyle);
+                    .FirstOrDefaultAsync(c => c.DocumentId == documentId);
 
                 if (existingCitation != null)
                 {
-                    Console.WriteLine($"[CitationManagementService] Returning existing citation for document {documentId} in {citationStyle} style");
+                    // Update existing citation with new style (for user-selected Generate endpoint)
+                    Console.WriteLine($"[CitationManagementService] Updating existing citation for document {documentId} from {existingCitation.Style} to {citationStyle} style");
+                    
+                    // Extract and validate metadata with detailed logging
+                    var updateCitationData = ExtractCitationData(document);
+                    Console.WriteLine($"[CitationManagementService] Extracted citation data: {updateCitationData}");
+
+                    // Generate citation using deterministic service
+                    var (updateFormatted, updateInText) = await _geminiCitationService.GenerateCitationAsync(
+                        updateCitationData.Title,
+                        updateCitationData.Authors,
+                        updateCitationData.Year,
+                        updateCitationData.PublicationDate,
+                        updateCitationData.Type,
+                        updateCitationData.Url,
+                        citationStyle);
+
+                    Console.WriteLine($"[CitationManagementService] Generated citations - Formatted: {updateFormatted}, InText: {updateInText}");
+
+                    // Validate generated citations
+                    if (string.IsNullOrWhiteSpace(updateFormatted) || string.IsNullOrWhiteSpace(updateInText))
+                    {
+                        throw new Exception("Generated citations are empty or invalid");
+                    }
+
+                    // Update existing citation
+                    existingCitation.Style = citationStyle;
+                    existingCitation.FormattedCitation = updateFormatted;
+                    existingCitation.InTextCitation = updateInText;
+                    existingCitation.CreatedAt = DateTime.UtcNow;
+
+                    // Update document with citation style
+                    document.CitationStyle = citationStyle;
+                    
+                    await _context.SaveChangesAsync();
+
                     return new CitationResponse
                     {
                         DocumentId = documentId,
                         Style = citationStyle,
-                        FormattedCitation = existingCitation.FormattedCitation,
-                        InTextCitation = existingCitation.InTextCitation
+                        FormattedCitation = updateFormatted,
+                        InTextCitation = updateInText
                     };
                 }
 
@@ -71,7 +106,8 @@ namespace VUniBox.Services.Citation
                     throw new Exception("Generated citations are empty or invalid");
                 }
 
-                // Save citation to database
+                // Create new citation since none exists
+                Console.WriteLine($"[CitationManagementService] Creating new citation for document {documentId} in {citationStyle} style");
                 var citation = new Citations
                 {
                     DocumentId = documentId,
@@ -117,22 +153,28 @@ namespace VUniBox.Services.Citation
                     return null;
                 }
 
-                // Remove existing citations for this document
-                var existingCitations = await _context.Citations
-                    .Where(c => c.DocumentId == documentId)
-                    .ToListAsync();
+                // Check if citation already exists with the requested style
+                var existingCitation = await _context.Citations
+                    .FirstOrDefaultAsync(c => c.DocumentId == documentId && c.Style == newCitationStyle);
 
-                if (existingCitations.Any())
+                if (existingCitation != null)
                 {
-                    Console.WriteLine($"[CitationManagementService] Removing {existingCitations.Count} existing citations for document {documentId}");
-                    _context.Citations.RemoveRange(existingCitations);
+                    // Return existing citation if same style already exists
+                    Console.WriteLine($"[CitationManagementService] Citation with {newCitationStyle} style already exists for document {documentId}");
+                    return new CitationResponse
+                    {
+                        DocumentId = documentId,
+                        Style = existingCitation.Style,
+                        FormattedCitation = existingCitation.FormattedCitation,
+                        InTextCitation = existingCitation.InTextCitation
+                    };
                 }
 
                 // Extract and validate metadata
                 var citationData = ExtractCitationData(document);
                 Console.WriteLine($"[CitationManagementService] Extracted citation data for regeneration: {citationData}");
 
-                // Generate new citation
+                // Generate new citation with different style
                 var (formatted, inText) = await _geminiCitationService.GenerateCitationAsync(
                     citationData.Title,
                     citationData.Authors,
@@ -148,7 +190,7 @@ namespace VUniBox.Services.Citation
                     throw new Exception("Regenerated citations are empty or invalid");
                 }
 
-                // Save new citation
+                // Create new citation with different style (keeping existing ones)
                 var newCitation = new Citations
                 {
                     DocumentId = documentId,
@@ -161,12 +203,12 @@ namespace VUniBox.Services.Citation
 
                 _context.Citations.Add(newCitation);
                 
-                // Update document with new citation style
+                // Update document with latest citation style
                 document.CitationStyle = newCitationStyle;
                 
                 await _context.SaveChangesAsync();
 
-                Console.WriteLine($"[CitationManagementService] Successfully regenerated citation for document {documentId} in {newCitationStyle} style");
+                Console.WriteLine($"[CitationManagementService] Successfully created additional citation for document {documentId} in {newCitationStyle} style");
 
                 return new CitationResponse
                 {

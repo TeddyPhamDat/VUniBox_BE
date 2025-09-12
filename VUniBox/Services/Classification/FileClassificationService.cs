@@ -4,10 +4,16 @@ using VUniBox.Models.Enum;
 
 namespace VUniBox.Services.Classification
 {
+    /// <summary>
+    /// Service for classifying files based on their file extension.
+    /// </summary>
     public class FileClassificationService : IFileClassificationService
     {
         private readonly Dictionary<string, DocumentType> _fileExtensionMapping;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="FileClassificationService"/> class.
+        /// </summary>
         public FileClassificationService()
         {
             _fileExtensionMapping = new Dictionary<string, DocumentType>(StringComparer.OrdinalIgnoreCase)
@@ -45,11 +51,21 @@ namespace VUniBox.Services.Classification
             };
         }
 
+        /// <summary>
+        /// Asynchronously classifies a file based on its extension.
+        /// </summary>
+        /// <param name="fileName">The name of the file to classify.</param>
+        /// <returns>A <see cref="ClassificationResponse"/> indicating the success and classified document type.</returns>
         public async Task<ClassificationResponse> ClassifyFileAsync(string fileName)
         {
             return await Task.FromResult(ClassifyFile(fileName));
         }
 
+        /// <summary>
+        /// Classifies a file based on its extension.
+        /// </summary>
+        /// <param name="fileName">The name of the file to classify.</param>
+        /// <returns>A <see cref="ClassificationResponse"/> indicating the success and classified document type.</returns>
         public ClassificationResponse ClassifyFile(string fileName)
         {
             try
@@ -113,6 +129,7 @@ namespace VUniBox.Services.Classification
         }
     }
 }
+
 
 
 

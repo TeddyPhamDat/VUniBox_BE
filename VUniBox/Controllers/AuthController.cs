@@ -28,6 +28,12 @@ namespace VUniBox.Controllers
         private readonly VUniBoxContext _context;
         private readonly IEmailSender _emailSender;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AuthController"/> class.
+        /// </summary>
+        /// <param name="jwtService">The JWT service for token generation.</param>
+        /// <param name="context">The database context.</param>
+        /// <param name="emailSender">The email sender service.</param>
         public AuthController(JwtService jwtService, VUniBoxContext context, IEmailSender emailSender)
         {
             _jwtService = jwtService;
@@ -37,8 +43,10 @@ namespace VUniBox.Controllers
 
 
         /// <summary>
-        /// Authenticate user and return JWT access + refresh token.
+        /// Authenticates a user and returns JWT access + refresh tokens.
         /// </summary>
+        /// <param name="request">The login request containing username and password.</param>
+        /// <returns>An <see cref="IActionResult"/> with login response including tokens.</returns>
         [HttpPost("login")]
         public IActionResult CreateSession([FromBody] Models.DTO.Request.LoginRequest request)
         {
@@ -68,9 +76,11 @@ namespace VUniBox.Controllers
 
 
         /// <summary>
-        /// Initiate user registration and send an OTP (One-Time Password) to the provided email for verification.
+        /// Initiates user registration and sends an OTP (One-Time Password) to the provided email for verification.
         /// This step creates a new user as unverified if they don't already exist or handles resending OTP.
         /// </summary>
+        /// <param name="request">The registration request containing the user's email.</param>
+        /// <returns>An <see cref="IActionResult"/> indicating the status of the OTP sending.</returns>
         [HttpPost("registrations")]
         public async Task<IActionResult> CreateRegistration([FromBody] RegisterRequest request)
         {
@@ -135,8 +145,10 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Completes the user registration process by verifying the OTP, setting the username, full name, and password.
+        /// Completes the user registration process by verifying the OTP, setting the full name, and password.
         /// </summary>
+        /// <param name="request">The complete registration request containing email, OTP, full name, and password.</param>
+        /// <returns>An <see cref="IActionResult"/> with the login response after successful registration.</returns>
         [HttpPost("registrations/complete")]
         public async Task<IActionResult> CompleteRegistration([FromBody] CompleteRegistrationRequest request)
         {
@@ -175,6 +187,39 @@ namespace VUniBox.Controllers
             user.CreatedAt = DateTime.UtcNow;
             user.IsActive = true;
 
+            // Gán gói FREE mặc định cho user mới
+            var freePlan = await _context.Plans
+                .FirstOrDefaultAsync(p => p.PlanName == "FREE" && p.Price == 0);
+            
+            if (freePlan != null)
+            {
+                user.CurrentPlanId = freePlan.PlanId;
+                user.PlanExpiryDate = null; // FREE không hết hạn
+                
+                // Tạo subscription record
+                var subscription = new Subscriptions
+                {
+                    UserId = user.UserId,
+                    PlanId = freePlan.PlanId,
+                    StartDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                    EndDate = DateOnly.FromDateTime(DateTime.UtcNow.AddYears(100)), // FREE plan có EndDate rất xa
+                    Status = "ACTIVE",
+                    PaymentId = null
+                };
+                _context.Subscriptions.Add(subscription);
+                
+                // Tạo usage stats ban đầu
+                var usageStats = new UsageStats
+                {
+                    UserId = user.UserId,
+                    StorageUsedMb = 0,
+                    CitationUsed = 0,
+                    ChatbotUsed = 0,
+                    LastUpdated = DateTime.UtcNow
+                };
+                _context.UsageStats.Add(usageStats);
+            }
+
             await _context.SaveChangesAsync();
 
             //    // Assign default quotas for new users.
@@ -205,6 +250,8 @@ namespace VUniBox.Controllers
         /// <summary>
         /// Authenticates a user using Google OAuth and creates/updates a user session.
         /// </summary>
+        /// <param name="request">The Google login request containing the ID token.</param>
+        /// <returns>An <see cref="IActionResult"/> with the login response including tokens.</returns>
         [HttpPost("google-sessions")]
         public async Task<IActionResult> CreateGoogleSession([FromBody] GoogleLoginRequest request)
         {
@@ -267,6 +314,8 @@ namespace VUniBox.Controllers
         /// <summary>
         /// Initiates the forgot password process by sending a password reset OTP to the user's email.
         /// </summary>
+        /// <param name="request">The forgot password request containing the user's email.</param>
+        /// <returns>An <see cref="IActionResult"/> indicating the status of the OTP sending.</returns>
         [HttpPost("forgot-password")]
 
         public async Task<IActionResult> ForgotPassword([FromBody] VUniBox.Models.DTO.Request.ForgotPasswordRequest request)
@@ -299,6 +348,8 @@ namespace VUniBox.Controllers
         /// <summary>
         /// Resets the user's password using a valid OTP and the new password.
         /// </summary>
+        /// <param name="request">The reset password request containing email, OTP, and new password.</param>
+        /// <returns>An <see cref="IActionResult"/> indicating the success or failure of the password reset.</returns>
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] VUniBox.Models.DTO.Request.ResetPasswordRequest request)
         {
@@ -332,6 +383,7 @@ namespace VUniBox.Controllers
         /// <summary>
         /// Generates a 6-digit OTP code for email verification.
         /// </summary>
+        /// <returns>A 6-digit string representing the OTP token.</returns>
         private string GenerateOtpToken()
         {
             var random = new Random();

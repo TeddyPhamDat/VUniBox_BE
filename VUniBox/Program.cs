@@ -124,6 +124,9 @@ builder.Services.AddScoped<VUniBox.Services.Metadata.IMetadataExtractionService,
 // Register Document Management Services
 builder.Services.AddScoped<VUniBox.Services.DocumentManagement.IDocumentLifecycleService, VUniBox.Services.DocumentManagement.DocumentLifecycleService>();
 
+// Register Usage Tracking Service
+builder.Services.AddScoped<VUniBox.Services.Usage.IUsageTrackingService, VUniBox.Services.Usage.UsageTrackingService>();
+
 // Register Background Services
 builder.Services.AddHostedService<VUniBox.Services.Background.TrashCleanupService>();
 

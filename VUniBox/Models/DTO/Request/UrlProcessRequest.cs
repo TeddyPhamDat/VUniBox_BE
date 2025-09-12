@@ -7,6 +7,9 @@ namespace VUniBox.Models.DTO.Request
     [Obsolete("Consider using UrlInputRequest for new implementations")]
     public class UrlProcessRequest
     {
+        /// <summary>
+        /// Gets or sets the URL to be processed.
+        /// </summary>
         public string Url { get; set; } = string.Empty;
     }
 }

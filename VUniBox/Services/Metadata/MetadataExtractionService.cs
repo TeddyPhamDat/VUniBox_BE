@@ -3,11 +3,19 @@ using VUniBox.Models.Enum;
 
 namespace VUniBox.Services.Metadata
 {
+    /// <summary>
+    /// Service for extracting metadata from various input types (files, URLs).
+    /// </summary>
     public class MetadataExtractionService : IMetadataExtractionService
     {
         private readonly IFileMetadataExtractor _fileMetadataExtractor;
         private readonly IUrlMetadataExtractor _urlMetadataExtractor;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="MetadataExtractionService"/> class.
+        /// </summary>
+        /// <param name="fileMetadataExtractor">The file metadata extractor.</param>
+        /// <param name="urlMetadataExtractor">The URL metadata extractor.</param>
         public MetadataExtractionService(
             IFileMetadataExtractor fileMetadataExtractor,
             IUrlMetadataExtractor urlMetadataExtractor)
@@ -16,6 +24,14 @@ namespace VUniBox.Services.Metadata
             _urlMetadataExtractor = urlMetadataExtractor;
         }
 
+        /// <summary>
+        /// Extracts metadata from the given input based on its type.
+        /// </summary>
+        /// <param name="input">The input string (file path or URL).</param>
+        /// <param name="inputType">The type of the input (File or Url).</param>
+        /// <param name="documentType">The classified document type.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
+        /// <exception cref="ArgumentException">Thrown when an invalid input type is provided.</exception>
         public async Task<DocumentMetadataDto> ExtractMetadataAsync(string input, InputType inputType, DocumentType documentType)
         {
             return inputType switch
@@ -26,6 +42,13 @@ namespace VUniBox.Services.Metadata
             };
         }
 
+        /// <summary>
+        /// Extracts metadata from a file.
+        /// </summary>
+        /// <param name="filePath">The path to the file.</param>
+        /// <param name="fileName">The name of the file.</param>
+        /// <param name="documentType">The classified document type.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata from the file.</returns>
         public async Task<DocumentMetadataDto> ExtractFromFileAsync(string filePath, string fileName, DocumentType documentType)
         {
             try
@@ -59,6 +82,12 @@ namespace VUniBox.Services.Metadata
             }
         }
 
+        /// <summary>
+        /// Extracts metadata from a URL.
+        /// </summary>
+        /// <param name="url">The URL to extract metadata from.</param>
+        /// <param name="documentType">The classified document type.</param>
+        /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata from the URL.</returns>
         public async Task<DocumentMetadataDto> ExtractFromUrlAsync(string url, DocumentType documentType)
         {
             try
