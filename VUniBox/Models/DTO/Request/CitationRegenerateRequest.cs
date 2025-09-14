@@ -6,9 +6,15 @@ namespace VUniBox.Models.DTO.Request
     public class CitationRegenerateRequest
     {
         /// <summary>
+        /// Gets or sets the unique identifier of the user making the request.
+        /// </summary>
+        public int UserId { get; set; }
+        
+        /// <summary>
         /// Gets or sets the unique identifier of the document for which to regenerate citations.
         /// </summary>
         public int DocumentId { get; set; }
+        
         /// <summary>
         /// Gets or sets the new desired citation style (e.g., "APA", "MLA").
         /// </summary>

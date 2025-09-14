@@ -28,6 +28,42 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
+        /// Refreshes and recalculates user usage statistics.
+        /// </summary>
+        /// <param name="userId">The ID of the user.</param>
+        /// <returns>An <see cref="IActionResult"/> with the updated usage statistics.</returns>
+        [HttpPost("{userId}/refresh-usage")]
+        public async Task<IActionResult> RefreshUsageStats(int userId)
+        {
+            try
+            {
+                // Recalculate storage usage from actual files
+                await _usageTrackingService.UpdateStorageUsageAsync(userId);
+
+                var usage = await _usageTrackingService.GetUserUsageAsync(userId);
+                var (usedMb, limitMb, totalFiles) = await _usageTrackingService.GetStorageInfoAsync(userId);
+
+                var refreshedStats = new
+                {
+                    StorageUsedMb = usedMb,
+                    StorageLimitMb = limitMb,
+                    TotalFiles = totalFiles,
+                    CitationUsed = usage.CitationUsed ?? 0,
+                    ChatbotUsed = usage.ChatbotUsed ?? 0,
+                    LastUpdated = usage.LastUpdated,
+                    Message = "Thống kê đã được cập nhật thành công"
+                };
+
+                return Ok(ApiResponse<object>.Success(refreshedStats, "Thống kê đã được làm mới"));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
+        }
+
+
+        /// <summary>
         /// Retrieves the user profile along with their usage statistics.
         /// </summary>
         /// <param name="userId">The ID of the user.</param>
@@ -98,6 +134,7 @@ namespace VUniBox.Controllers
             }
         }
 
+       
         /// <summary>
         /// Retrieves storage usage details for a specific user.
         /// </summary>
@@ -132,39 +169,6 @@ namespace VUniBox.Controllers
             }
         }
 
-        /// <summary>
-        /// Refreshes and recalculates user usage statistics.
-        /// </summary>
-        /// <param name="userId">The ID of the user.</param>
-        /// <returns>An <see cref="IActionResult"/> with the updated usage statistics.</returns>
-        [HttpPost("{userId}/refresh-usage")]
-        public async Task<IActionResult> RefreshUsageStats(int userId)
-        {
-            try
-            {
-                // Recalculate storage usage from actual files
-                await _usageTrackingService.UpdateStorageUsageAsync(userId);
-
-                var usage = await _usageTrackingService.GetUserUsageAsync(userId);
-                var (usedMb, limitMb, totalFiles) = await _usageTrackingService.GetStorageInfoAsync(userId);
-
-                var refreshedStats = new
-                {
-                    StorageUsedMb = usedMb,
-                    StorageLimitMb = limitMb,
-                    TotalFiles = totalFiles,
-                    CitationUsed = usage.CitationUsed ?? 0,
-                    ChatbotUsed = usage.ChatbotUsed ?? 0,
-                    LastUpdated = usage.LastUpdated,
-                    Message = "Thống kê đã được cập nhật thành công"
-                };
-
-                return Ok(ApiResponse<object>.Success(refreshedStats, "Thống kê đã được làm mới"));
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
-            }
-        }
+       
     }
 }

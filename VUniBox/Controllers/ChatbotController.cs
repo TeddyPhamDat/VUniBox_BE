@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using Microsoft.AspNetCore.Mvc;
 using System.Threading.Tasks;
 using VUniBox.Services.Chatbot;
+using VUniBox.Services.Quota;
+using VUniBox.Models.DTO.Response;
 using System.Linq;
 
 namespace VUniBox.Controllers
@@ -15,16 +17,22 @@ namespace VUniBox.Controllers
     {
         private readonly IGeminiChatbotService _chatbotService;
         private readonly SessionChatService _sessionChatService;
+        private readonly IQuotaManagementService _quotaManagementService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ChatbotController"/> class.
         /// </summary>
         /// <param name="chatbotService">The Gemini chatbot service.</param>
         /// <param name="sessionChatService">The session chat service.</param>
-        public ChatbotController(IGeminiChatbotService chatbotService, SessionChatService sessionChatService)
+        /// <param name="quotaManagementService">The quota management service.</param>
+        public ChatbotController(
+            IGeminiChatbotService chatbotService, 
+            SessionChatService sessionChatService,
+            IQuotaManagementService quotaManagementService)
         {
             _chatbotService = chatbotService;
             _sessionChatService = sessionChatService;
+            _quotaManagementService = quotaManagementService;
         }
 
         /// <summary>
@@ -35,27 +43,58 @@ namespace VUniBox.Controllers
         [HttpPost("send")]
         public async Task<IActionResult> SendMessage([FromBody] ChatMessageRequest request)
         {
-            if (string.IsNullOrWhiteSpace(request.Message))
+            try
             {
-                return BadRequest(new { message = "Message cannot be empty." });
+                if (request == null)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
+                }
+
+                if (request.UserId <= 0)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("ID người dùng không hợp lệ", 400));
+                }
+
+                if (string.IsNullOrWhiteSpace(request.Message))
+                {
+                    return BadRequest(ApiResponse<object>.Fail("Tin nhắn không được để trống", 400));
+                }
+
+                // Check chatbot quota before processing
+                var canUseChatbot = await _quotaManagementService.CanUseChatbotAsync(request.UserId);
+                if (!canUseChatbot)
+                {
+                    return BadRequest(ApiResponse<object>.Fail(
+                        "Bạn đã vượt quá giới hạn sử dụng chatbot của gói hiện tại. Vui lòng nâng cấp gói để tiếp tục sử dụng.", 429));
+                }
+
+                // Lấy lịch sử chat từ session (tự động liên tục)
+                var chatHistory = _sessionChatService.GetChatHistory();
+
+                // Gửi tin nhắn với lịch sử đầy đủ
+                var response = await _chatbotService.SendMessageAsync(request.Message, chatHistory);
+
+                // Lưu tin nhắn user vào lịch sử
+                _sessionChatService.AddMessageToHistory("user", request.Message);
+                
+                // Lưu response AI vào lịch sử
+                _sessionChatService.AddMessageToHistory("model", response);
+
+                // Increment chatbot usage after successful interaction
+                await _quotaManagementService.IncrementChatbotUsageAsync(request.UserId);
+
+                var result = new 
+                { 
+                    response = response,
+                    messageCount = _sessionChatService.GetMessageCount()
+                };
+
+                return Ok(ApiResponse<object>.Success(result, "Tin nhắn đã được gửi thành công"));
             }
-
-            // Lấy lịch sử chat từ session (tự động liên tục)
-            var chatHistory = _sessionChatService.GetChatHistory();
-
-            // Gửi tin nhắn với lịch sử đầy đủ
-            var response = await _chatbotService.SendMessageAsync(request.Message, chatHistory);
-
-            // Lưu tin nhắn user vào lịch sử
-            _sessionChatService.AddMessageToHistory("user", request.Message);
-            
-            // Lưu response AI vào lịch sử
-            _sessionChatService.AddMessageToHistory("model", response);
-
-            return Ok(new { 
-                response = response,
-                messageCount = _sessionChatService.GetMessageCount()
-            });
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
         }
 
         /// <summary>
@@ -92,6 +131,11 @@ namespace VUniBox.Controllers
     /// </summary>
     public class ChatMessageRequest
     {
+        /// <summary>
+        /// Gets or sets the user ID making the request.
+        /// </summary>
+        public int UserId { get; set; }
+        
         /// <summary>
         /// Gets or sets the message text.
         /// </summary>

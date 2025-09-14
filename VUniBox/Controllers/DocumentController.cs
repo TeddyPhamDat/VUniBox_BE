@@ -4,6 +4,7 @@ using VUniBox.Models.DTO.Request;
 using VUniBox.Models.DTO.Response;
 using VUniBox.Services.DocumentManagement;
 using VUniBox.Services.Citation;
+using VUniBox.Services.Quota;
 using System;
 
 namespace VUniBox.Controllers
@@ -18,85 +19,22 @@ namespace VUniBox.Controllers
     {
         private readonly IDocumentLifecycleService _documentLifecycleService;
         private readonly ICitationManagementService _citationManagementService;
+        private readonly IQuotaManagementService _quotaManagementService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DocumentController"/> class.
         /// </summary>
         /// <param name="documentLifecycleService">The document lifecycle service.</param>
         /// <param name="citationManagementService">The citation management service.</param>
+        /// <param name="quotaManagementService">The quota management service.</param>
         public DocumentController(
             IDocumentLifecycleService documentLifecycleService,
-            ICitationManagementService citationManagementService)
+            ICitationManagementService citationManagementService,
+            IQuotaManagementService quotaManagementService)
         {
             _documentLifecycleService = documentLifecycleService;
             _citationManagementService = citationManagementService;
-        }
-
-        /// <summary>
-        /// Saves a document to a folder or moves it to trash based on user choice.
-        /// </summary>
-        /// <param name="request">The document save request.</param>
-        /// <returns>An <see cref="IActionResult"/> with the save result.</returns>
-        [HttpPost("save")]
-        public async Task<IActionResult> SaveDocument([FromBody] DocumentSaveRequest request)
-        {
-            try
-            {
-                if (request == null)
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
-                }
-
-                Documents document;
-                bool isInTrash = false;
-                DateTime? expiryDate = null;
-
-                if (request.SaveToFolder)
-                {
-                    // Lưu vào thư mục theo type
-                    document = await _documentLifecycleService.SaveDocumentAsync(
-                        request.UserId,
-                        request.Metadata,
-                        request.DocumentType, 
-                        request.FilePath);
-                }
-                else
-                {
-                    // Tạm thời lưu document với status Processing
-                    document = await _documentLifecycleService.SaveDocumentAsync(
-                        request.UserId, 
-                        request.Metadata, 
-                        request.DocumentType, 
-                        request.FilePath);
-
-                    // Sau đó chuyển vào thùng rác
-                    await _documentLifecycleService.MoveToTrashAsync(document.DocumentId, request.UserId);
-                    isInTrash = true;
-                    expiryDate = DateTime.UtcNow.AddDays(10);
-                }
-
-                var response = new DocumentSaveResponse
-                {
-                    Success = true,
-                    Document = new DocumentDto(document), // Convert to DocumentDto
-                    Message = request.SaveToFolder ? "Tài liệu đã được lưu thành công" : "Tài liệu đã được chuyển vào thùng rác",
-                    IsInTrash = isInTrash,
-                    ExpiryDate = expiryDate
-                };
-
-                return Ok(ApiResponse<DocumentSaveResponse>.Success(response, "Tài liệu đã được xử lý thành công"));
-            }
-            catch (Exception ex)
-            {
-                var errorResponse = new DocumentSaveResponse
-                {
-                    Success = false,
-                    Message = "Lưu tài liệu không thành công",
-                    Error = ex.Message
-                };
-
-                return StatusCode(500, ApiResponse<DocumentSaveResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
-            }
+            _quotaManagementService = quotaManagementService;
         }
 
         /// <summary>
@@ -162,41 +100,6 @@ namespace VUniBox.Controllers
                 else
                 {
                     return BadRequest(ApiResponse<object>.Fail("Không tìm thấy tài liệu trong thùng rác", 400));
-                }
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
-            }
-        }
-
-        /// <summary>
-        /// Deletes a document permanently.
-        /// </summary>
-        /// <param name="request">The document trash request.</param>
-        /// <returns>An <see cref="IActionResult"/> with the delete result.</returns>
-        [HttpDelete("permanent")]
-        public async Task<IActionResult> DeletePermanently([FromBody] DocumentTrashRequest request)
-        {
-            try
-            {
-                if (request == null)
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
-                }
-
-                var success = await _documentLifecycleService.DeletePermanentlyAsync(request.DocumentId, request.UserId);
-
-                if (success)
-                {
-                    return Ok(ApiResponse<object>.Success(new { 
-                        DocumentId = request.DocumentId,
-                        Message = "Tài liệu đã được xóa vĩnh viễn"
-                    }, "Tài liệu đã được xóa vĩnh viễn"));
-                }
-                else
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Không tìm thấy tài liệu", 400));
                 }
             }
             catch (Exception ex)
@@ -440,25 +343,33 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Cleans up expired documents from the trash (Admin only).
+        /// Deletes a document permanently.
         /// </summary>
-        /// <returns>An <see cref="IActionResult"/> indicating the cleanup result.</returns>
-        [HttpPost("clean-trash")]
-        public async Task<IActionResult> CleanExpiredTrash()
+        /// <param name="request">The document trash request.</param>
+        /// <returns>An <see cref="IActionResult"/> with the delete result.</returns>
+        [HttpDelete("permanent")]
+        public async Task<IActionResult> DeletePermanently([FromBody] DocumentTrashRequest request)
         {
             try
             {
-                var success = await _documentLifecycleService.CleanExpiredTrashAsync();
+                if (request == null)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
+                }
+
+                var success = await _documentLifecycleService.DeletePermanentlyAsync(request.DocumentId, request.UserId);
 
                 if (success)
                 {
-                    return Ok(ApiResponse<object>.Success(new { 
-                        Message = "Tài liệu hết hạn trong thùng rác đã được dọn dẹp thành công"
-                    }, "Thùng rác đã được dọn dẹp"));
+                    return Ok(ApiResponse<object>.Success(new
+                    {
+                        DocumentId = request.DocumentId,
+                        Message = "Tài liệu đã được xóa vĩnh viễn"
+                    }, "Tài liệu đã được xóa vĩnh viễn"));
                 }
                 else
                 {
-                    return StatusCode(500, ApiResponse<object>.Fail("Không thể dọn dẹp thùng rác", 500));
+                    return BadRequest(ApiResponse<object>.Fail("Không tìm thấy tài liệu", 400));
                 }
             }
             catch (Exception ex)

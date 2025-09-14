@@ -122,13 +122,24 @@ builder.Services.AddScoped<VUniBox.Services.Metadata.IUrlMetadataExtractor, VUni
 builder.Services.AddScoped<VUniBox.Services.Metadata.IMetadataExtractionService, VUniBox.Services.Metadata.MetadataExtractionService>();
 
 // Register Document Management Services
+// Register Document Management Service
 builder.Services.AddScoped<VUniBox.Services.DocumentManagement.IDocumentLifecycleService, VUniBox.Services.DocumentManagement.DocumentLifecycleService>();
 
 // Register Usage Tracking Service
 builder.Services.AddScoped<VUniBox.Services.Usage.IUsageTrackingService, VUniBox.Services.Usage.UsageTrackingService>();
 
+// Register Quota Management Service
+builder.Services.AddScoped<VUniBox.Services.Quota.IQuotaManagementService, VUniBox.Services.Quota.QuotaManagementService>();
+
+// Register Subscription Service
+builder.Services.AddScoped<VUniBox.Services.Subscription.ISubscriptionService, VUniBox.Services.Subscription.SubscriptionService>();
+
+// Register PayOS Payment Service
+builder.Services.AddScoped<VUniBox.Services.Payment.IPayOSService, VUniBox.Services.Payment.PayOSService>();
+
 // Register Background Services
 builder.Services.AddHostedService<VUniBox.Services.Background.TrashCleanupService>();
+builder.Services.AddHostedService<VUniBox.Services.Background.MonthlyQuotaResetService>();
 
 // Add this before app.Build();
 builder.Services.AddDbContext<VUniBox.DBContext.VUniBoxContext>(options =>

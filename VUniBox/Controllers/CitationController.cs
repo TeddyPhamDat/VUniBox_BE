@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using VUniBox.Models.DTO.Request;
 using VUniBox.Models.DTO.Response;
 using VUniBox.Services.Citation;
+using VUniBox.Services.Quota;
 
 namespace VUniBox.Controllers
 {
@@ -11,10 +12,14 @@ namespace VUniBox.Controllers
     public class CitationController : ControllerBase
     {
         private readonly ICitationManagementService _citationManagementService;
+        private readonly IQuotaManagementService _quotaManagementService;
 
-        public CitationController(ICitationManagementService citationManagementService)
+        public CitationController(
+            ICitationManagementService citationManagementService,
+            IQuotaManagementService quotaManagementService)
         {
             _citationManagementService = citationManagementService;
+            _quotaManagementService = quotaManagementService;
         }
 
         /// <summary>
@@ -32,6 +37,11 @@ namespace VUniBox.Controllers
                     return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
                 }
 
+                if (request.UserId <= 0)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("ID người dùng không hợp lệ", 400));
+                }
+
                 if (request.DocumentId <= 0)
                 {
                     return BadRequest(ApiResponse<object>.Fail("ID tài liệu không hợp lệ", 400));
@@ -40,6 +50,14 @@ namespace VUniBox.Controllers
                 if (string.IsNullOrWhiteSpace(request.CitationStyle))
                 {
                     return BadRequest(ApiResponse<object>.Fail("Phong cách trích dẫn không được để trống", 400));
+                }
+
+                // Check quota before generating citation
+                var canUseCitation = await _quotaManagementService.CanUseCitationAsync(request.UserId);
+                if (!canUseCitation)
+                {
+                    return BadRequest(ApiResponse<object>.Fail(
+                        "Bạn đã vượt quá giới hạn trích dẫn của gói hiện tại. Vui lòng nâng cấp gói để tiếp tục sử dụng.", 429));
                 }
 
                 // Validate citation style
@@ -62,6 +80,9 @@ namespace VUniBox.Controllers
                     return NotFound(ApiResponse<object>.Fail(
                         "Không tìm thấy tài liệu hoặc không thể tạo trích dẫn", 404));
                 }
+
+                // Increment citation usage after successful generation
+                await _quotaManagementService.IncrementCitationUsageAsync(request.UserId);
 
                 Console.WriteLine($"[CitationController] Successfully generated citation for document {request.DocumentId}");
 
@@ -91,6 +112,11 @@ namespace VUniBox.Controllers
                     return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
                 }
 
+                if (request.UserId <= 0)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("ID người dùng không hợp lệ", 400));
+                }
+
                 if (request.DocumentId <= 0)
                 {
                     return BadRequest(ApiResponse<object>.Fail("ID tài liệu không hợp lệ", 400));
@@ -99,6 +125,14 @@ namespace VUniBox.Controllers
                 if (string.IsNullOrWhiteSpace(request.NewCitationStyle))
                 {
                     return BadRequest(ApiResponse<object>.Fail("Phong cách trích dẫn mới không được để trống", 400));
+                }
+
+                // Check quota before regenerating citation
+                var canUseCitation = await _quotaManagementService.CanUseCitationAsync(request.UserId);
+                if (!canUseCitation)
+                {
+                    return BadRequest(ApiResponse<object>.Fail(
+                        "Bạn đã vượt quá giới hạn trích dẫn của gói hiện tại. Vui lòng nâng cấp gói để tiếp tục sử dụng.", 429));
                 }
 
                 // Validate citation style
@@ -121,6 +155,9 @@ namespace VUniBox.Controllers
                     return NotFound(ApiResponse<object>.Fail(
                         "Không tìm thấy tài liệu hoặc không thể tạo lại trích dẫn", 404));
                 }
+
+                // Increment citation usage after successful regeneration
+                await _quotaManagementService.IncrementCitationUsageAsync(request.UserId);
 
                 Console.WriteLine($"[CitationController] Successfully regenerated citation for document {request.DocumentId}");
 

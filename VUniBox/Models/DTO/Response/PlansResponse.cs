@@ -222,5 +222,33 @@ namespace VUniBox.Models.DTO.Response
         /// Gets or sets an error message if the subscription operation failed.
         /// </summary>
         public string? Error { get; set; }
+        /// <summary>
+        /// Gets or sets the plan name.
+        /// </summary>
+        public string? PlanName { get; set; }
+        /// <summary>
+        /// Gets or sets the subscription start date.
+        /// </summary>
+        public string? StartDate { get; set; }
+        /// <summary>
+        /// Gets or sets the subscription end date.
+        /// </summary>
+        public string? EndDate { get; set; }
+        /// <summary>
+        /// Gets or sets the subscription status.
+        /// </summary>
+        public string? Status { get; set; }
+        /// <summary>
+        /// Gets or sets whether payment is required.
+        /// </summary>
+        public bool RequirePayment { get; set; }
+        /// <summary>
+        /// Gets or sets the PayOS transaction ID.
+        /// </summary>
+        public string? PayOsTransactionId { get; set; }
+        /// <summary>
+        /// Gets or sets the PayOS order code.
+        /// </summary>
+        public long? OrderCode { get; set; }
     }
 }
