@@ -1,9 +1,10 @@
 ﻿using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity.Data;
-using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.SqlServer.Server;
 using System.Security.Claims;
+using System.Text.Json;
+using System.Linq;
 using VUniBox.DBContext;
 using VUniBox.Models;
 using VUniBox.Models.DTO.Request;
@@ -18,7 +19,7 @@ namespace VUniBox.Controllers
 {
     /// <summary>
     /// Controller for authentication and registration flows.
-    /// Follows RESTful conventions: pluralized, hyphenated nouns for resource URIs.
+    /// Simple authentication without OTP/SMS verification.
     /// </summary>
     [ApiController]
     [Route("api/authentication")]
@@ -26,225 +27,207 @@ namespace VUniBox.Controllers
     {
         private readonly IJwtService _jwtService;
         private readonly VUniBoxContext _context;
-        private readonly IEmailSender _emailSender;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="AuthController"/> class.
         /// </summary>
         /// <param name="jwtService">The JWT service for token generation.</param>
         /// <param name="context">The database context.</param>
-        /// <param name="emailSender">The email sender service.</param>
-        public AuthController(JwtService jwtService, VUniBoxContext context, IEmailSender emailSender)
+        public AuthController(IJwtService jwtService, VUniBoxContext context)
         {
             _jwtService = jwtService;
             _context = context;
-            _emailSender = emailSender;
         }
 
-
         /// <summary>
-        /// Authenticates a user and returns JWT access + refresh tokens.
+        /// Login with email and password
         /// </summary>
-        /// <param name="request">The login request containing username and password.</param>
-        /// <returns>An <see cref="IActionResult"/> with login response including tokens.</returns>
         [HttpPost("login")]
-        public IActionResult CreateSession([FromBody] Models.DTO.Request.LoginRequest request)
+        public async Task<IActionResult> Login([FromBody] LoginRequest request)
         {
-            var user = _context.Users.FirstOrDefault(u => u.Email == request.Username);
-
-            if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
-                return Unauthorized(ApiResponse<object>.Fail("Tên người dùng hoặc mật khẩu không hợp lệ", 401));
-
-            // Tạo access token 
-            var tokens = _jwtService.GenerateTokens(user);
-
-            _context.SaveChanges();
-
-            // Trả về response
-            var response = new LoginResponse
+            try
             {
-                UserId = user.UserId,
-                Token = tokens.AccessToken,
-                TokenExpiresAt = tokens.AccessTokenExpireAt,
-                FullName = user.FullName,
-                Email = user.Email,
-                Role = ((Role)user.Role).ToString()
-            };
-
-            return Ok(ApiResponse<LoginResponse>.Success(response));
-        }
-
-
-        /// <summary>
-        /// Initiates user registration and sends an OTP (One-Time Password) to the provided email for verification.
-        /// This step creates a new user as unverified if they don't already exist or handles resending OTP.
-        /// </summary>
-        /// <param name="request">The registration request containing the user's email.</param>
-        /// <returns>An <see cref="IActionResult"/> indicating the status of the OTP sending.</returns>
-        [HttpPost("registrations")]
-        public async Task<IActionResult> CreateRegistration([FromBody] RegisterRequest request)
-        {
-            if (string.IsNullOrEmpty(request.Email))
-                return BadRequest(ApiResponse<string>.Fail("Email không được để trống", 400));
-
-            var existingUser = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
-
-            if (existingUser != null)
-            {
-                if ((bool)existingUser.IsVerified)
-                    return BadRequest(ApiResponse<string>.Fail("Email đã được đăng ký", 400));
-
-                var oldOtp = await _context.OtpToken
-                    .Where(o => o.Email == request.Email && o.Used == false)
-                    .OrderByDescending(o => o.CreatedAt)
-                    .FirstOrDefaultAsync();
-                var otpCreatedAtUtc = DateTime.SpecifyKind((DateTime)oldOtp.CreatedAt, DateTimeKind.Utc);
-                if (oldOtp != null && (DateTime.UtcNow - otpCreatedAtUtc).TotalMinutes < 1)
+                if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
                 {
-                    return Ok(ApiResponse<string>.Success("", "OTP đã được gửi. Vui lòng kiểm tra email của bạn."));
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Email và mật khẩu không được để trống", 400));
                 }
 
-                // Send a new OTP if the previous one is expired or used.
-                var newOtp = new OtpToken
+                // Find user by email
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
+                if (user == null)
                 {
-                    Email = request.Email,
-                    Token = GenerateOtpToken(),
-                    CreatedAt = DateTime.UtcNow,
-                    Used = false
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Email hoặc mật khẩu không đúng", 400));
+                }
+
+                // Verify password
+                if (!BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Email hoặc mật khẩu không đúng", 400));
+                }
+
+                // Check if user is active
+                if (user.IsActive != true)
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Tài khoản đã bị khóa", 400));
+                }
+
+                // Generate JWT token
+                var tokens = _jwtService.GenerateTokens(user);
+
+                var response = new LoginResponse
+                {
+                    UserId = user.UserId,
+                    Token = tokens.AccessToken,
+                    TokenExpiresAt = tokens.AccessTokenExpireAt,
+                    FullName = user.FullName,
+                    Email = user.Email,
+                    Role = user.Role.ToString()
                 };
-                _context.OtpToken.Add(newOtp);
-                await _context.SaveChangesAsync();
 
-                await _emailSender.SendEmailAsync(request.Email, "VUniBox registration OTP", $"Mã OTP của bạn là: {newOtp.Token}");
-
-                return Ok(ApiResponse<string>.Success("", "OTP mới đã được gửi lại"));
+                return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng nhập thành công"));
             }
-
-            // Create a new user and send OTP for verification.
-            var newUser = new VUniBox.Models.Users
+            catch (Exception ex)
             {
-                Email = request.Email,
-                Role = (int)Role.USER,
-                IsVerified = false
-            };
-            _context.Users.Add(newUser);
-
-            var otp = new OtpToken
-            {
-                Email = request.Email,
-                Token = GenerateOtpToken(),
-                CreatedAt = DateTime.UtcNow,
-                Used = false
-            };
-            _context.OtpToken.Add(otp);
-
-            await _context.SaveChangesAsync();
-            await _emailSender.SendEmailAsync(request.Email, "VUniBox registration OTP", $"Mã OTP của bạn là: {otp.Token}");
-
-            return Ok(ApiResponse<string>.Success("", "OTP đã được gửi đến email"));
+                return StatusCode(500, ApiResponse<LoginResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
         }
 
         /// <summary>
-        /// Completes the user registration process by verifying the OTP, setting the full name, and password.
+        /// Simple one-step registration with all required information
         /// </summary>
-        /// <param name="request">The complete registration request containing email, OTP, full name, and password.</param>
-        /// <returns>An <see cref="IActionResult"/> with the login response after successful registration.</returns>
-        [HttpPost("registrations/complete")]
-        public async Task<IActionResult> CompleteRegistration([FromBody] CompleteRegistrationRequest request)
+        [HttpPost("register")]
+        public async Task<IActionResult> Register([FromBody] SimpleRegistrationRequest request)
         {
-            if (string.IsNullOrEmpty(request.Email) || string.IsNullOrEmpty(request.OtpToken)
-                || string.IsNullOrEmpty(request.Password) || string.IsNullOrEmpty(request.FullName))
+            try
             {
-                return BadRequest(ApiResponse<string>.Fail("Email, OTP, Họ và tên, và Mật khẩu không được để trống", 400));
-            }
-
-            var otp = _context.OtpToken
-                .Where(o => o.Email == request.Email && o.Token == request.OtpToken && o.Used == false)
-                .OrderByDescending(o => o.CreatedAt)
-                .FirstOrDefault();
-
-            if (otp == null)
-                return BadRequest(ApiResponse<string>.Fail("OTP không hợp lệ hoặc đã được sử dụng", 400));
-
-            var otpCreatedAtUtc = DateTime.SpecifyKind((DateTime)otp.CreatedAt, DateTimeKind.Utc);
-
-            if ((DateTime.UtcNow - otpCreatedAtUtc).TotalMinutes > 1)
-                return BadRequest(ApiResponse<string>.Fail("OTP đã hết hạn", 400));
-
-            var user = _context.Users.FirstOrDefault(u => u.Email == request.Email);
-
-            if (user == null)
-                return BadRequest(ApiResponse<string>.Fail("Không tìm thấy người dùng", 400));
-
-            if (user.IsVerified == true)
-                return BadRequest(ApiResponse<string>.Fail("Tài khoản đã được xác minh", 400));
-
-            otp.Used = true;
-            user.IsVerified = true;
-            user.FullName = request.FullName;
-            user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
-            user.Email = user.Email;
-            user.CreatedAt = DateTime.UtcNow;
-            user.IsActive = true;
-
-            // Gán gói FREE mặc định cho user mới
-            var freePlan = await _context.Plans
-                .FirstOrDefaultAsync(p => p.PlanName == "FREE" && p.Price == 0);
-            
-            if (freePlan != null)
-            {
-                user.CurrentPlanId = freePlan.PlanId;
-                user.PlanExpiryDate = null; // FREE không hết hạn
-                
-                // Tạo subscription record
-                var subscription = new Subscriptions
+                // Validate input
+                if (string.IsNullOrWhiteSpace(request.Email) || 
+                    string.IsNullOrWhiteSpace(request.PhoneNumber) ||
+                    string.IsNullOrWhiteSpace(request.FullName) ||
+                    string.IsNullOrWhiteSpace(request.Password) ||
+                    string.IsNullOrWhiteSpace(request.ConfirmPassword))
                 {
-                    UserId = user.UserId,
-                    PlanId = freePlan.PlanId,
-                    StartDate = DateOnly.FromDateTime(DateTime.UtcNow),
-                    EndDate = DateOnly.FromDateTime(DateTime.UtcNow.AddYears(100)), // FREE plan có EndDate rất xa
-                    Status = "ACTIVE",
-                    PaymentId = null
-                };
-                _context.Subscriptions.Add(subscription);
-                
-                // Tạo usage stats ban đầu
-                var usageStats = new UsageStats
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Tất cả các trường không được để trống", 400));
+                }
+
+                // Validate email format
+                if (!IsValidEmail(request.Email))
                 {
-                    UserId = user.UserId,
-                    StorageUsedMb = 0,
-                    CitationUsed = 0,
-                    ChatbotUsed = 0,
-                    LastUpdated = DateTime.UtcNow
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Định dạng email không hợp lệ", 400));
+                }
+
+                // Validate Vietnamese phone number format
+                if (!IsValidVietnamesePhoneNumber(request.PhoneNumber))
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Số điện thoại phải có 10 chữ số và bắt đầu bằng số 0", 400));
+                }
+
+                // Check password confirmation
+                if (request.Password != request.ConfirmPassword)
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Mật khẩu xác nhận không khớp", 400));
+                }
+
+                // Password strength validation
+                if (request.Password.Length < 8)
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Mật khẩu phải có ít nhất 8 ký tự", 400));
+                }
+
+                // Convert Vietnamese phone number to international format
+                var convertedPhone = request.PhoneNumber;
+                if (request.PhoneNumber.StartsWith("0") && request.PhoneNumber.Length >= 10)
+                {
+                    convertedPhone = "+84" + request.PhoneNumber.Substring(1);
+                }
+
+                // Check if email already exists
+                var existingUserByEmail = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
+                if (existingUserByEmail != null)
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Email đã được đăng ký", 400));
+                }
+
+                // Check if phone number already exists
+                var existingUserByPhone = await _context.Users.FirstOrDefaultAsync(u => 
+                    u.PhoneNumber == request.PhoneNumber || u.PhoneNumber == convertedPhone);
+                if (existingUserByPhone != null)
+                {
+                    return BadRequest(ApiResponse<LoginResponse>.Fail("Số điện thoại đã được đăng ký", 400));
+                }
+
+                // Hash password
+                var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
+
+                // Create new user
+                var newUser = new Users
+                {
+                    Email = request.Email,
+                    PhoneNumber = convertedPhone,
+                    FullName = request.FullName,
+                    PasswordHash = passwordHash,
+                    Role = (int)Role.USER,
+                    IsVerified = true,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow
                 };
-                _context.UsageStats.Add(usageStats);
+
+                // Assign FREE plan
+                var freePlan = await _context.Plans.FirstOrDefaultAsync(p => p.PlanName == "FREE" && p.Price == 0);
+                if (freePlan != null)
+                {
+                    newUser.CurrentPlanId = freePlan.PlanId;
+                    newUser.PlanExpiryDate = null;
+                }
+
+                _context.Users.Add(newUser);
+                await _context.SaveChangesAsync();
+
+                // Create subscription and usage stats
+                if (freePlan != null)
+                {
+                    var subscription = new Subscriptions
+                    {
+                        UserId = newUser.UserId,
+                        PlanId = freePlan.PlanId,
+                        StartDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                        EndDate = DateOnly.FromDateTime(DateTime.UtcNow.AddYears(100)),
+                        Status = "ACTIVE",
+                        PaymentId = null
+                    };
+                    _context.Subscriptions.Add(subscription);
+
+                    var usageStats = new UsageStats
+                    {
+                        UserId = newUser.UserId,
+                        StorageUsedMb = 0,
+                        CitationUsed = 0,
+                        ChatbotUsed = 0,
+                        LastUpdated = DateTime.UtcNow
+                    };
+                    _context.UsageStats.Add(usageStats);
+                    await _context.SaveChangesAsync();
+                }
+
+                // Generate JWT token
+                var tokens = _jwtService.GenerateTokens(newUser);
+
+                var response = new LoginResponse
+                {
+                    UserId = newUser.UserId,
+                    Token = tokens.AccessToken,
+                    TokenExpiresAt = tokens.AccessTokenExpireAt,
+                    FullName = newUser.FullName,
+                    Email = newUser.Email,
+                    Role = newUser.Role.ToString()
+                };
+
+                return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng ký thành công"));
             }
-
-            await _context.SaveChangesAsync();
-
-            //    // Assign default quotas for new users.
-            //    var periodStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
-            //    var periodEnd = periodStart.AddMonths(1).AddDays(-1);
-
-            //    var quotas = new List<UserQuotum>
-            //{
-            //    new UserQuotum { UserId = user.UserId, QuotaType = "video", QuotaLimit = 1, QuotaUsed = 0, PeriodStart = periodStart, PeriodEnd = periodEnd, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
-            //    new UserQuotum { UserId = user.UserId, QuotaType = "slides", QuotaLimit = 5, QuotaUsed = 0, PeriodStart = periodStart, PeriodEnd = periodEnd, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
-            //};
-
-            //    _context.UserQuota.AddRange(quotas);
-            //    await _context.SaveChangesAsync();
-
-            var response = new LoginResponse
+            catch (Exception ex)
             {
-                Token = "",
-                TokenExpiresAt = null,
-                FullName = user.FullName,
-                Email = user.Email,
-                Role = ((Role)user.Role).ToString()
-            };
-
-            return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng ký hoàn tất thành công"));
+                return StatusCode(500, ApiResponse<LoginResponse>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
         }
 
         /// <summary>
@@ -252,142 +235,285 @@ namespace VUniBox.Controllers
         /// </summary>
         /// <param name="request">The Google login request containing the ID token.</param>
         /// <returns>An <see cref="IActionResult"/> with the login response including tokens.</returns>
-        [HttpPost("google-sessions")]
-        public async Task<IActionResult> CreateGoogleSession([FromBody] GoogleLoginRequest request)
+        [HttpPost("google-login")]
+        public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request)
         {
-            GoogleJsonWebSignature.Payload payload;
             try
             {
-                payload = await GoogleJsonWebSignature.ValidateAsync(request.IdToken);
-            }
-            catch (InvalidJwtException)
-            {
-                return BadRequest(ApiResponse<string>.Fail("Mã thông báo không hợp lệ", 401));
-            }
-
-            var email = payload.Email;
-            if (string.IsNullOrEmpty(email))
-                return BadRequest(ApiResponse<string>.Fail("Không thể lấy email từ Google", 400));
-
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
-
-            if (user != null)
-            {
-                if (user.IsVerified == false)
+                GoogleJsonWebSignature.Payload payload;
+                try
                 {
-                    return BadRequest(ApiResponse<string>.Fail("Tài khoản chưa được xác thực qua OTP", 400));
+                    payload = await GoogleJsonWebSignature.ValidateAsync(request.IdToken);
                 }
-            }
-            else
-            {
-                // Register new user from Google account.
-                user = new VUniBox.Models.Users
+                catch (InvalidJwtException)
                 {
-                    Email = email,
-                    FullName = payload.Name,
-                    Role = (int)Role.USER,
-                    IsVerified = true,
-                    CreatedAt = DateTime.UtcNow,
-                    IsActive = true
+                    return BadRequest(ApiResponse<string>.Fail("Mã thông báo Google không hợp lệ", 401));
+                }
+
+                var email = payload.Email;
+                if (string.IsNullOrEmpty(email))
+                    return BadRequest(ApiResponse<string>.Fail("Không thể lấy email từ Google", 400));
+
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+                if (user == null)
+                {
+                    // Register new user from Google account
+                    user = new Users
+                    {
+                        Email = email,
+                        FullName = payload.Name,
+                        Role = (int)Role.USER,
+                        IsVerified = true,
+                        CreatedAt = DateTime.UtcNow,
+                        IsActive = true
+                    };
+
+                    // Assign FREE plan
+                    var freePlan = await _context.Plans.FirstOrDefaultAsync(p => p.PlanName == "FREE" && p.Price == 0);
+                    if (freePlan != null)
+                    {
+                        user.CurrentPlanId = freePlan.PlanId;
+                        user.PlanExpiryDate = null;
+                    }
+
+                    _context.Users.Add(user);
+                    await _context.SaveChangesAsync();
+
+                    // Create subscription and usage stats
+                    if (freePlan != null)
+                    {
+                        var subscription = new Subscriptions
+                        {
+                            UserId = user.UserId,
+                            PlanId = freePlan.PlanId,
+                            StartDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                            EndDate = DateOnly.FromDateTime(DateTime.UtcNow.AddYears(100)),
+                            Status = "ACTIVE",
+                            PaymentId = null
+                        };
+                        _context.Subscriptions.Add(subscription);
+
+                        var usageStats = new UsageStats
+                        {
+                            UserId = user.UserId,
+                            StorageUsedMb = 0,
+                            CitationUsed = 0,
+                            ChatbotUsed = 0,
+                            LastUpdated = DateTime.UtcNow
+                        };
+                        _context.UsageStats.Add(usageStats);
+                        await _context.SaveChangesAsync();
+                    }
+                }
+
+                // Check if user is active
+                if (user.IsActive != true)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Tài khoản đã bị khóa", 400));
+                }
+
+                var tokens = _jwtService.GenerateTokens(user);
+
+                var response = new LoginResponse
+                {
+                    UserId = user.UserId,
+                    Token = tokens.AccessToken,
+                    TokenExpiresAt = tokens.AccessTokenExpireAt,
+                    FullName = user.FullName,
+                    Email = user.Email,
+                    Role = ((Role)user.Role).ToString()
                 };
-                _context.Users.Add(user);
-                await _context.SaveChangesAsync();
+
+                return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng nhập thành công với Google"));
             }
-
-            var tokens = _jwtService.GenerateTokens(user);
-
-            var response = new LoginResponse
+            catch (Exception ex)
             {
-                UserId = user.UserId,
-                Token = tokens.AccessToken,
-                TokenExpiresAt = null,
-                FullName = user.FullName,
-                Email = user.Email,
-                Role = ((Role)user.Role).ToString()
-            };
-
-            return Ok(ApiResponse<LoginResponse>.Success(response, "Đăng nhập thành công với Google"));
+                return StatusCode(500, ApiResponse<string>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
         }
 
-
-
         /// <summary>
-        /// Initiates the forgot password process by sending a password reset OTP to the user's email.
+        /// Step 1: Verify email and phone for forgot password
         /// </summary>
-        /// <param name="request">The forgot password request containing the user's email.</param>
-        /// <returns>An <see cref="IActionResult"/> indicating the status of the OTP sending.</returns>
-        [HttpPost("forgot-password")]
-
-        public async Task<IActionResult> ForgotPassword([FromBody] VUniBox.Models.DTO.Request.ForgotPasswordRequest request)
+        [HttpPost("forgot-password/verify")]
+        public async Task<IActionResult> VerifyForgotPassword([FromBody] ForgotPasswordRequest request)
         {
-            if (string.IsNullOrEmpty(request.Email))
-                return BadRequest(ApiResponse<string>.Fail("Email là bắt buộc", 400));
-
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
-
-            if (user == null || user.IsVerified != true)
-                return BadRequest(ApiResponse<string>.Fail("Email chưa được đăng ký hoặc xác minh", 400));
-
-            var otp = new OtpToken
+            try
             {
-                Email = user.Email,
-                Token = GenerateOtpToken(), // Random 6-digit code
-                CreatedAt = DateTime.UtcNow,
-                Used = false
-            };
+                if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.PhoneNumber))
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Email và số điện thoại không được để trống", 400));
+                }
 
-            _context.OtpToken.Add(otp);
-            await _context.SaveChangesAsync();
+                // Validate email format
+                if (!IsValidEmail(request.Email))
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Định dạng email không hợp lệ", 400));
+                }
 
-            // Gửi email chứa mã OTP ở đây (tùy tích hợp)
-            await _emailSender.SendEmailAsync(user.Email, "VUniBox Password Reset OTP", $"Mã OTP của bạn là: {otp.Token}");
+                // Validate Vietnamese phone number format (10 digits starting with 0)
+                if (!IsValidVietnamesePhoneNumber(request.PhoneNumber))
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Số điện thoại phải có 10 chữ số và bắt đầu bằng số 0", 400));
+                }
 
-            return Ok(ApiResponse<string>.Success("", "OTP đã được gửi đến email của bạn"));
+                // Convert phone number if needed
+                var convertedPhone = request.PhoneNumber;
+                if (request.PhoneNumber.StartsWith("0") && request.PhoneNumber.Length >= 10)
+                {
+                    convertedPhone = "+84" + request.PhoneNumber.Substring(1);
+                }
+
+                // Check if user exists with both email and phone
+                var user = await _context.Users.FirstOrDefaultAsync(u => 
+                    u.Email == request.Email && 
+                    (u.PhoneNumber == request.PhoneNumber || u.PhoneNumber == convertedPhone));
+
+                if (user == null)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Không tìm thấy tài khoản với email và số điện thoại này", 400));
+                }
+
+                if (user.IsActive != true)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Tài khoản đã bị khóa", 400));
+                }
+
+                // Store verified user info in session for password reset
+                HttpContext.Session.SetString("ForgotPassword_Email", request.Email);
+                HttpContext.Session.SetString("ForgotPassword_Phone", convertedPhone);
+                HttpContext.Session.SetString("ForgotPassword_Expiry", DateTime.UtcNow.AddMinutes(15).ToString());
+
+                return Ok(ApiResponse<string>.Success("", "Xác thực thành công. Bạn có thể đặt lại mật khẩu mới."));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<string>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
         }
 
         /// <summary>
-        /// Resets the user's password using a valid OTP and the new password.
+        /// Step 2: Reset password using session data from verification step
         /// </summary>
-        /// <param name="request">The reset password request containing email, OTP, and new password.</param>
-        /// <returns>An <see cref="IActionResult"/> indicating the success or failure of the password reset.</returns>
-        [HttpPost("reset-password")]
-        public async Task<IActionResult> ResetPassword([FromBody] VUniBox.Models.DTO.Request.ResetPasswordRequest request)
+        [HttpPost("forgot-password/reset")]
+        public async Task<IActionResult> ResetForgotPassword([FromBody] ResetPasswordRequest request)
         {
-            if (string.IsNullOrEmpty(request.Email) || string.IsNullOrEmpty(request.OtpToken) || string.IsNullOrEmpty(request.NewPassword))
-                return BadRequest(ApiResponse<string>.Fail("Email, OTP và Mật khẩu mới là bắt buộc", 400));
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.NewPassword) || 
+                    string.IsNullOrWhiteSpace(request.ConfirmPassword))
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Mật khẩu mới và xác nhận mật khẩu không được để trống", 400));
+                }
 
-            var otp = await _context.OtpToken
-                .Where(o => o.Email == request.Email && o.Token == request.OtpToken && o.Used == false)
-                .OrderByDescending(o => o.CreatedAt)
-                .FirstOrDefaultAsync();
+                if (request.NewPassword != request.ConfirmPassword)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Mật khẩu xác nhận không khớp", 400));
+                }
 
-            if (otp == null || (DateTime.UtcNow - otp.CreatedAt.Value).TotalMinutes > 5)
-                return BadRequest(ApiResponse<string>.Fail("OTP không hợp lệ hoặc đã hết hạn", 400));
+                if (request.NewPassword.Length < 6)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Mật khẩu phải có ít nhất 6 ký tự", 400));
+                }
 
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
-            if (user == null)
-                return BadRequest(ApiResponse<string>.Fail("Không tìm thấy người dùng", 400));
+                // Get verified user info from session
+                var sessionEmail = HttpContext.Session.GetString("ForgotPassword_Email");
+                var sessionPhone = HttpContext.Session.GetString("ForgotPassword_Phone");
+                var sessionExpiry = HttpContext.Session.GetString("ForgotPassword_Expiry");
 
-            // Cập nhật mật khẩu
-            user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
-            otp.Used = true;
+                if (string.IsNullOrEmpty(sessionEmail) || string.IsNullOrEmpty(sessionPhone) || string.IsNullOrEmpty(sessionExpiry))
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Vui lòng thực hiện xác thực email và số điện thoại trước", 400));
+                }
 
-            await _context.SaveChangesAsync();
+                // Check if session has expired
+                if (DateTime.TryParse(sessionExpiry, out var expiryTime) && DateTime.UtcNow > expiryTime)
+                {
+                    // Clear expired session
+                    HttpContext.Session.Remove("ForgotPassword_Email");
+                    HttpContext.Session.Remove("ForgotPassword_Phone");
+                    HttpContext.Session.Remove("ForgotPassword_Expiry");
+                    return BadRequest(ApiResponse<string>.Fail("Phiên xác thực đã hết hạn. Vui lòng thực hiện lại việc xác thực", 400));
+                }
 
-            return Ok(ApiResponse<string>.Success("Mật khẩu đã được đặt lại thành công"));
+                // Find user by email and phone from session
+                var user = await _context.Users.FirstOrDefaultAsync(u => 
+                    u.Email == sessionEmail && u.PhoneNumber == sessionPhone);
+
+                if (user == null)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Không tìm thấy tài khoản", 400));
+                }
+
+                if (user.IsActive != true)
+                {
+                    return BadRequest(ApiResponse<string>.Fail("Tài khoản đã bị khóa", 400));
+                }
+
+                // Hash new password
+                var hashedPassword = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
+                user.PasswordHash = hashedPassword;
+
+                await _context.SaveChangesAsync();
+
+                // Clear session after successful password reset
+                HttpContext.Session.Remove("ForgotPassword_Email");
+                HttpContext.Session.Remove("ForgotPassword_Phone");
+                HttpContext.Session.Remove("ForgotPassword_Expiry");
+
+                return Ok(ApiResponse<string>.Success("", "Đặt lại mật khẩu thành công"));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<string>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
         }
 
+        /// <summary>
+        /// Validates email format using regular expression
+        /// </summary>
+        /// <param name="email">The email to validate</param>
+        /// <returns>True if email format is valid, false otherwise</returns>
+        private bool IsValidEmail(string email)
+        {
+            if (string.IsNullOrWhiteSpace(email))
+                return false;
 
-
+            try
+            {
+                // Use System.ComponentModel.DataAnnotations.EmailAddressAttribute for validation
+                var emailAttribute = new System.ComponentModel.DataAnnotations.EmailAddressAttribute();
+                return emailAttribute.IsValid(email);
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         /// <summary>
-        /// Generates a 6-digit OTP code for email verification.
+        /// Validates Vietnamese phone number format (10 digits starting with 0)
         /// </summary>
-        /// <returns>A 6-digit string representing the OTP token.</returns>
-        private string GenerateOtpToken()
+        /// <param name="phoneNumber">The phone number to validate</param>
+        /// <returns>True if phone number format is valid, false otherwise</returns>
+        private bool IsValidVietnamesePhoneNumber(string phoneNumber)
         {
-            var random = new Random();
-            return random.Next(100000, 999999).ToString();
+            if (string.IsNullOrWhiteSpace(phoneNumber))
+                return false;
+
+            // Remove any spaces or special characters
+            var cleanedPhone = phoneNumber.Replace(" ", "").Replace("-", "").Replace("(", "").Replace(")", "");
+
+            // Check if it's exactly 10 digits and starts with 0
+            if (cleanedPhone.Length != 10)
+                return false;
+
+            if (!cleanedPhone.StartsWith("0"))
+                return false;
+
+            // Check if all characters are digits
+            return cleanedPhone.All(char.IsDigit);
         }
     }
 }

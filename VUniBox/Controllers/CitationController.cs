@@ -8,7 +8,7 @@ using VUniBox.Services.Quota;
 namespace VUniBox.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/citation")]
     public class CitationController : ControllerBase
     {
         private readonly ICitationManagementService _citationManagementService;

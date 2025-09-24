@@ -75,7 +75,7 @@ c.SwaggerDoc("v2", new OpenApiInfo
 
 // In development, load sensitive configuration from a separate secrets file.
 // This allows you to keep secrets out of source control.
-if (builder.Environment.IsDevelopment())
+if (builder.Environment.IsDevelopment() || builder.Environment.IsProduction())
 {
     builder.Configuration.AddJsonFile("Secrets/appsettings.Secrets.json", optional: true, reloadOnChange: true);
 }
@@ -83,7 +83,8 @@ if (builder.Environment.IsDevelopment())
 // Register other application services for dependency injection.
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<JwtService>();
-builder.Services.AddTransient<IEmailSender, EmailSender>();
+builder.Services.AddScoped<IJwtService, JwtService>();  
+
 
 // Register Gemini Classification Service with HttpClient
 builder.Services.AddHttpClient<IGeminiClassificationService, GeminiClassificationService>();
@@ -137,7 +138,6 @@ builder.Services.AddScoped<VUniBox.Services.Subscription.ISubscriptionService, V
 // Register PayOS Payment Service
 builder.Services.AddScoped<VUniBox.Services.Payment.IPayOSService, VUniBox.Services.Payment.PayOSService>();
 
-// Register Background Services
 builder.Services.AddHostedService<VUniBox.Services.Background.TrashCleanupService>();
 builder.Services.AddHostedService<VUniBox.Services.Background.MonthlyQuotaResetService>();
 
@@ -172,23 +172,49 @@ builder.Services.AddCors(options =>
         builder => builder
             .AllowAnyOrigin()
             .AllowAnyHeader()
-            .AllowAnyMethod());
+            .AllowAnyMethod()
+            .WithExposedHeaders("*"));
+    
+    // Add specific policy for development
+    options.AddPolicy("Development",
+        builder => builder
+            .AllowAnyOrigin()
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .WithExposedHeaders("*"));
 });
 
 
 var app = builder.Build();
 
-// Enable Swagger UI for API exploration and testing.
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+// Configure different behavior for development vs production
+if (app.Environment.IsDevelopment())
 {
-    c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
-    // c.RoutePrefix = string.Empty; // Uncomment to serve at root
-});
+    // Enable Swagger UI for API exploration and testing.
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
+        // c.RoutePrefix = string.Empty; // Uncomment to serve at root
+    });
+    
+    // Use more permissive CORS in development
+    app.UseCors("Development");
+}
+else
+{
+    // Production configuration
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
+    });
+    
+    app.UseCors("AllowAll");
+}
 
 app.UseHttpsRedirection();
 
-app.UseCors("AllowAll");
 app.UseSession(); // Enable session middleware
 app.UseAuthentication();
 app.UseAuthorization();

@@ -9,7 +9,7 @@ using System.Linq;
 namespace VUniBox.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/chatbot")]
     /// <summary>
     /// Controller for handling chatbot interactions.
     /// </summary>

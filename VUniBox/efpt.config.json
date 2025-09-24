@@ -3,7 +3,7 @@
    "ContextClassName": "VUniBoxContext",
    "ContextNamespace": null,
    "FilterSchemas": false,
-   "IncludeConnectionString": true,
+   "IncludeConnectionString": false,
    "ModelNamespace": null,
    "OutputContextPath": null,
    "OutputPath": "Models",
@@ -24,10 +24,6 @@
       },
       {
          "Name": "[dbo].[DocumentStorage]",
-         "ObjectType": 0
-      },
-      {
-         "Name": "[dbo].[OtpToken]",
          "ObjectType": 0
       },
       {

@@ -10,7 +10,7 @@ using System;
 namespace VUniBox.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/document")]
     /// <summary>
     /// Controller for managing documents within the VUniBox application.
     /// Handles operations such as saving, moving to trash, restoring, permanent deletion, and retrieval of documents.

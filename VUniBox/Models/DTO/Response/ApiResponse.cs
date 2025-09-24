@@ -1,4 +1,5 @@
-﻿namespace VUniBox.Models.DTO.Response
+﻿
+namespace VUniBox.Models.DTO.Response
 {
     public class ApiResponse<T>
     {
@@ -30,10 +31,9 @@
             {
                 Code = code,
                 Message = message,
-                Result = (T)(object)""
+                Result = default(T)
             };
         }
-
     }
 }
 

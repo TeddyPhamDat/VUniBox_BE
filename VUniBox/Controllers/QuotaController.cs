@@ -8,7 +8,7 @@ namespace VUniBox.Controllers
     /// Controller for managing user quota and usage statistics
     /// </summary>
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/quota")]
     public class QuotaController : ControllerBase
     {
         private readonly IQuotaManagementService _quotaManagementService;

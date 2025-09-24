@@ -20,6 +20,8 @@ namespace VUniBox.Services.Background
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            _logger.LogInformation("MonthlyQuotaResetService started");
+            
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
@@ -47,20 +49,51 @@ namespace VUniBox.Services.Background
                         }
                         
                         // Wait for the rest of the hour to avoid multiple resets
-                        await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            _logger.LogInformation("MonthlyQuotaResetService shutdown requested during hour delay");
+                            break;
+                        }
                     }
                     
                     // Check every hour
-                    await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogInformation("MonthlyQuotaResetService shutdown requested during hourly check");
+                        break;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("MonthlyQuotaResetService shutdown requested");
+                    break;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error occurred while resetting monthly quota");
                     
-                    // Wait before retrying
-                    await Task.Delay(TimeSpan.FromMinutes(30), stoppingToken);
+                    // Wait before retrying, but handle cancellation
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMinutes(30), stoppingToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogInformation("MonthlyQuotaResetService shutdown requested during error retry delay");
+                        break;
+                    }
                 }
             }
+            
+            _logger.LogInformation("MonthlyQuotaResetService stopped");
         }
     }
 }

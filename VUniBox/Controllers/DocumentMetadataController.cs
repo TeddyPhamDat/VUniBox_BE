@@ -14,7 +14,7 @@ namespace VUniBox.Controllers
     /// Handles metadata extraction, document saving, and citation generation
     /// </summary>
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/documentMetadata")]
     public class DocumentMetadataController : ControllerBase
     {
         private readonly IMetadataExtractionService _metadataExtractionService;
@@ -104,18 +104,43 @@ namespace VUniBox.Controllers
                 }
                 else if (!string.IsNullOrEmpty(request.Url))
                 {
-                    // URL processing - extract metadata from web page
-                    metadata = await _metadataExtractionService.ExtractFromUrlAsync(
-                        request.Url, 
-                        request.DocumentType);
-                        
-                    // 1.1. AUTO-FIX CORRUPTED TEXT using AI
-                    metadata = await FixCorruptedTextInMetadata(metadata);
-
-                    // 1.2. If metadata is mostly empty, try to generate from URL
-                    if (IsMetadataEmpty(metadata) && !string.IsNullOrEmpty(request.Url))
+                    try
                     {
-                        metadata = await GenerateMetadataFromUrl(metadata, request.Url, request.DocumentType);
+                        Console.WriteLine($"[DEBUG] Starting URL metadata extraction for: {request.Url}");
+                        
+                        // URL processing - extract metadata from web page
+                        metadata = await _metadataExtractionService.ExtractFromUrlAsync(
+                            request.Url, 
+                            request.DocumentType);
+                            
+                        Console.WriteLine($"[DEBUG] URL extraction completed. Title: {metadata.Title}");
+                            
+                        // 1.1. AUTO-FIX CORRUPTED TEXT using AI
+                        metadata = await FixCorruptedTextInMetadata(metadata);
+
+                        // 1.2. If metadata is mostly empty, try to generate from URL
+                        if (IsMetadataEmpty(metadata) && !string.IsNullOrEmpty(request.Url))
+                        {
+                            Console.WriteLine($"[DEBUG] Metadata is empty, generating from URL");
+                            metadata = await GenerateMetadataFromUrl(metadata, request.Url, request.DocumentType);
+                        }
+                    }
+                    catch (Exception urlEx)
+                    {
+                        Console.WriteLine($"[ERROR] URL extraction failed for {request.Url}: {urlEx.Message}");
+                        
+                        // Create fallback metadata if URL extraction completely fails
+                        metadata = new DocumentMetadataDto
+                        {
+                            URL = request.Url,
+                            Title = ExtractTitleFromUrl(request.Url),
+                            Description = $"Không thể trích xuất metadata từ URL. Lỗi: {urlEx.Message}",
+                            Source = GetDomainFromUrl(request.Url),
+                            Language = "vi",
+                            RetrievedDate = DateTime.UtcNow
+                        };
+                        
+                        Console.WriteLine($"[DEBUG] Created fallback metadata with title: {metadata.Title}");
                     }
                 }
                 else
@@ -175,95 +200,7 @@ namespace VUniBox.Controllers
             }
         }
 
-        /// <summary>
-        /// Extracts metadata only, without saving the document.
-        /// This is useful for previewing or testing metadata extraction.
-        /// </summary>
-        /// <param name="request">The metadata extraction request.</param>
-        /// <returns>An <see cref="IActionResult"/> with the extracted metadata.</returns>
-        [HttpPost("extract-metadata")]
-        public async Task<IActionResult> ExtractMetadata([FromBody] MetadataExtractionRequest request)
-        {
-            try
-            {
-                if (request == null)
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
-                }
-
-                DocumentMetadataDto metadata;
-                
-                if (!string.IsNullOrEmpty(request.FilePath))
-                {
-                    // Extract from file
-                    metadata = await _metadataExtractionService.ExtractFromFileAsync(
-                        request.FilePath, 
-                        request.FileName ?? Path.GetFileName(request.FilePath), 
-                        request.DocumentType);
-                        
-                    // AUTO-FIX CORRUPTED TEXT using AI
-                    metadata = await FixCorruptedTextInMetadata(metadata);
-
-                    // If metadata is mostly empty, try to generate from filename
-                    if (IsMetadataEmpty(metadata) && !string.IsNullOrEmpty(request.FileName))
-                    {
-                        metadata = await GenerateMetadataFromFilename(metadata, request.FileName, request.DocumentType);
-                    }
-                }
-                else if (!string.IsNullOrEmpty(request.Url))
-                {
-                    // Extract from URL
-                    metadata = await _metadataExtractionService.ExtractFromUrlAsync(
-                        request.Url, 
-                        request.DocumentType);
-                        
-                    // AUTO-FIX CORRUPTED TEXT using AI
-                    metadata = await FixCorruptedTextInMetadata(metadata);
-
-                    // If metadata is mostly empty, try to generate from URL
-                    if (IsMetadataEmpty(metadata) && !string.IsNullOrEmpty(request.Url))
-                    {
-                        metadata = await GenerateMetadataFromUrl(metadata, request.Url, request.DocumentType);
-                    }
-                }
-                else
-                {
-                    return BadRequest(ApiResponse<object>.Fail("Thiếu thông tin file hoặc URL", 400));
-                }
-
-                return Ok(ApiResponse<DocumentMetadataDto>.Success(metadata, "Trích xuất metadata thành công"));
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
-            }
-        }
-
-        /// <summary>
-        /// Retrieves document metadata by document ID.
-        /// This is useful for retrieving metadata of already saved documents.
-        /// </summary>
-        /// <param name="documentId">The ID of the document.</param>
-        /// <param name="userId">The ID of the user for security checks.</param>
-        /// <returns>An <see cref="IActionResult"/> with the document metadata.</returns>
-        [HttpGet("metadata/{documentId}")]
-        public async Task<IActionResult> GetDocumentMetadata(int documentId, [FromQuery] int userId)
-        {
-            try
-            {
-                // This would need to be implemented in DocumentLifecycleService
-                // For now, return a placeholder response
-                return Ok(ApiResponse<object>.Success(
-                    new { message = "Get metadata by document ID - To be implemented" }, 
-                    "Placeholder endpoint"));
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
-            }
-        }
-
-
+      
 
         /// <summary>
         /// Automatically fixes corrupted text in metadata using AI.
@@ -741,6 +678,61 @@ Text đã sửa:";
                 DocumentType.Others => "Tài liệu khác",
                 _ => "Không xác định"
             };
+        }
+
+        /// <summary>
+        /// Extracts a basic title from URL when metadata extraction fails.
+        /// </summary>
+        /// <param name="url">The URL to extract title from.</param>
+        /// <returns>A basic title based on the URL.</returns>
+        private string ExtractTitleFromUrl(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                var domain = uri.Host.Replace("www.", "");
+                
+                // Try to get meaningful title from path
+                var pathSegments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (pathSegments.Length > 0)
+                {
+                    var lastSegment = pathSegments.Last();
+                    // Remove file extensions and clean up
+                    var title = Path.GetFileNameWithoutExtension(lastSegment)
+                        .Replace("-", " ")
+                        .Replace("_", " ")
+                        .Replace("%20", " ");
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 3)
+                    {
+                        return $"{title} - {domain}";
+                    }
+                }
+                
+                return $"Tài liệu từ {domain}";
+            }
+            catch
+            {
+                return "Tài liệu từ website";
+            }
+        }
+
+        /// <summary>
+        /// Gets the domain name from a URL.
+        /// </summary>
+        /// <param name="url">The URL to extract domain from.</param>
+        /// <returns>The domain name.</returns>
+        private string GetDomainFromUrl(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                return uri.Host.Replace("www.", "");
+            }
+            catch
+            {
+                return "Unknown";
+            }
         }
     }
 

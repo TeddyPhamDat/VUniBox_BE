@@ -10,7 +10,7 @@ namespace VUniBox.Controllers
     /// Controller quản lý các gói dịch vụ VUniBox
     /// </summary>
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/plan")]
     public class PlansController : ControllerBase
     {
         private readonly VUniBoxContext _context;

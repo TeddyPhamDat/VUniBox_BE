@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace VUniBox.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/userProfile")]
     /// <summary>
     /// Controller for managing user profiles and retrieving usage statistics.
     /// </summary>

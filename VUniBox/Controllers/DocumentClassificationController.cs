@@ -11,7 +11,7 @@ namespace VUniBox.Controllers
     /// Handles file upload and URL processing with auto-classification
     /// </summary>
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/documentClassification")]
     public class DocumentClassificationController : ControllerBase
     {
         private readonly IClassificationService _classificationService;

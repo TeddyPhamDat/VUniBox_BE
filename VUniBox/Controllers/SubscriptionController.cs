@@ -13,7 +13,7 @@ namespace VUniBox.Controllers
     /// Controller quản lý đăng ký gói dịch vụ và thanh toán
     /// </summary>
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/subscription")]
     public class SubscriptionController : ControllerBase
     {
         private readonly VUniBoxContext _context;

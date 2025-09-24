@@ -11,6 +11,8 @@ public partial class Users
 
     public string FullName { get; set; }
 
+    public string PhoneNumber { get; set; }
+
     public string Email { get; set; }
 
     public string PasswordHash { get; set; }
@@ -34,8 +36,6 @@ public partial class Users
     public virtual ICollection<DocumentStorage> DocumentStorage { get; set; } = new List<DocumentStorage>();
 
     public virtual ICollection<Documents> Documents { get; set; } = new List<Documents>();
-
-    public virtual ICollection<OtpToken> OtpToken { get; set; } = new List<OtpToken>();
 
     public virtual ICollection<Payments> Payments { get; set; } = new List<Payments>();
 
