@@ -170,18 +170,18 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll",
         builder => builder
-            .AllowAnyOrigin()
+            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173")
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .WithExposedHeaders("*"));
+            .AllowCredentials());
     
     // Add specific policy for development
     options.AddPolicy("Development",
         builder => builder
-            .AllowAnyOrigin()
+            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173")
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .WithExposedHeaders("*"));
+            .AllowCredentials());
 });
 
 
