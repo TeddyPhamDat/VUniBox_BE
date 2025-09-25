@@ -1,14 +1,16 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using System;
 using VUniBox.Models;
 using VUniBox.Models.DTO.Request;
 using VUniBox.Models.DTO.Response;
-using VUniBox.Services.DocumentManagement;
 using VUniBox.Services.Citation;
+using VUniBox.Services.DocumentManagement;
 using VUniBox.Services.Quota;
-using System;
 
 namespace VUniBox.Controllers
 {
+    [Authorize]
     [ApiController]
     [Route("api/document")]
     /// <summary>
@@ -322,7 +324,7 @@ namespace VUniBox.Controllers
                 var response = new TrashResponse
                 {
                     Success = true,
-                    TrashDocuments = trashDocuments,
+                    TrashDocuments = trashDocuments.Select(d => new DocumentDto(d)).ToList(),
                     Message = "Tài liệu trong thùng rác đã được truy xuất thành công",
                     TotalCount = trashDocuments.Count
                 };

@@ -99,10 +99,13 @@ builder.Services.AddHttpClient<IGeminiChatbotService, GeminiChatbotService>();
 builder.Services.AddDistributedMemoryCache();
 builder.Services.AddSession(options =>
 {
-    options.IdleTimeout = TimeSpan.FromHours(2); // Session expires after 2 hours of inactivity
+    options.IdleTimeout = TimeSpan.FromMinutes(15); // Phù hợp cho forgot password
     options.Cookie.HttpOnly = true;
     options.Cookie.IsEssential = true;
     options.Cookie.Name = "VUniBox.Session";
+    options.Cookie.SecurePolicy = CookieSecurePolicy.None; // For HTTP localhost
+    options.Cookie.SameSite = SameSiteMode.Lax; // For CORS requests
+    options.Cookie.Path = "/"; // Ensure cookie applies to all paths
 });
 
 // Register Session Chat Service

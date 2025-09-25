@@ -21,6 +21,8 @@ namespace VUniBox.Controllers
     /// Controller for authentication and registration flows.
     /// Simple authentication without OTP/SMS verification.
     /// </summary>
+
+    
     [ApiController]
     [Route("api/authentication")]
     public class AuthController : ControllerBase
@@ -385,6 +387,10 @@ namespace VUniBox.Controllers
                 HttpContext.Session.SetString("ForgotPassword_Phone", convertedPhone);
                 HttpContext.Session.SetString("ForgotPassword_Expiry", DateTime.UtcNow.AddMinutes(15).ToString());
 
+                Console.WriteLine($"[DEBUG] Verify Success - Session ID: {HttpContext.Session.Id}");
+                Console.WriteLine($"[DEBUG] Stored Email: {request.Email}");
+                Console.WriteLine($"[DEBUG] Stored Phone: {convertedPhone}");
+
                 return Ok(ApiResponse<string>.Success("", "Xác thực thành công. Bạn có thể đặt lại mật khẩu mới."));
             }
             catch (Exception ex)
@@ -401,19 +407,26 @@ namespace VUniBox.Controllers
         {
             try
             {
+                // ADD DEBUG LOGGING
+                Console.WriteLine($"[DEBUG] Reset Password - Session ID: {HttpContext.Session.Id}");
+                Console.WriteLine($"[DEBUG] Reset Password - Session Keys: {string.Join(", ", HttpContext.Session.Keys)}");
+
                 if (string.IsNullOrWhiteSpace(request.NewPassword) || 
                     string.IsNullOrWhiteSpace(request.ConfirmPassword))
                 {
+                    Console.WriteLine("[DEBUG] Password fields are empty");
                     return BadRequest(ApiResponse<string>.Fail("Mật khẩu mới và xác nhận mật khẩu không được để trống", 400));
                 }
 
                 if (request.NewPassword != request.ConfirmPassword)
                 {
+                    Console.WriteLine("[DEBUG] Password confirmation mismatch");
                     return BadRequest(ApiResponse<string>.Fail("Mật khẩu xác nhận không khớp", 400));
                 }
 
                 if (request.NewPassword.Length < 6)
                 {
+                    Console.WriteLine("[DEBUG] Password too short");
                     return BadRequest(ApiResponse<string>.Fail("Mật khẩu phải có ít nhất 6 ký tự", 400));
                 }
 
@@ -422,8 +435,13 @@ namespace VUniBox.Controllers
                 var sessionPhone = HttpContext.Session.GetString("ForgotPassword_Phone");
                 var sessionExpiry = HttpContext.Session.GetString("ForgotPassword_Expiry");
 
+                Console.WriteLine($"[DEBUG] Session Email: '{sessionEmail ?? "NULL"}'");
+                Console.WriteLine($"[DEBUG] Session Phone: '{sessionPhone ?? "NULL"}'");
+                Console.WriteLine($"[DEBUG] Session Expiry: '{sessionExpiry ?? "NULL"}'");
+
                 if (string.IsNullOrEmpty(sessionEmail) || string.IsNullOrEmpty(sessionPhone) || string.IsNullOrEmpty(sessionExpiry))
                 {
+                    Console.WriteLine("[DEBUG] Session data missing - returning 400");
                     return BadRequest(ApiResponse<string>.Fail("Vui lòng thực hiện xác thực email và số điện thoại trước", 400));
                 }
 

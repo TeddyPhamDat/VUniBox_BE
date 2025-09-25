@@ -14,7 +14,7 @@ namespace VUniBox.Models.DTO.Response
         /// <summary>
         /// Gets or sets the list of documents currently in the trash.
         /// </summary>
-        public List<Documents> TrashDocuments { get; set; } = new();
+        public List<DocumentDto> TrashDocuments { get; set; } = new();
         /// <summary>
         /// Gets or sets a message related to the operation.
         /// </summary>

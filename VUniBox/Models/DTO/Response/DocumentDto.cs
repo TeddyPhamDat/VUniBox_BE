@@ -110,6 +110,10 @@ namespace VUniBox.Models.DTO.Response
         /// Gets or sets the date and time when the document was retrieved.
         /// </summary>
         public DateTime? RetrievedDate { get; set; }
+        /// <summary>
+        /// Gets or sets the citation style for the document.
+        /// </summary>
+        public string CitationStyle { get; set; } = string.Empty;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DocumentDto"/> class.
@@ -148,6 +152,7 @@ namespace VUniBox.Models.DTO.Response
             Source = document.Source ?? string.Empty;
             Language = document.Language ?? string.Empty;
             RetrievedDate = document.RetrievedDate;
+            CitationStyle = document.CitationStyle ?? string.Empty;
         }
     }
 }
