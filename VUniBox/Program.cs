@@ -100,11 +100,11 @@ builder.Services.AddDistributedMemoryCache();
 builder.Services.AddSession(options =>
 {
     options.IdleTimeout = TimeSpan.FromMinutes(15); // Phù hợp cho forgot password
-    options.Cookie.HttpOnly = true;
+    options.Cookie.HttpOnly = false;
     options.Cookie.IsEssential = true;
     options.Cookie.Name = "VUniBox.Session";
     options.Cookie.SecurePolicy = CookieSecurePolicy.None; // For HTTP localhost
-    options.Cookie.SameSite = SameSiteMode.Lax; // For CORS requests
+    options.Cookie.SameSite = SameSiteMode.None; // For CORS requests
     options.Cookie.Path = "/"; // Ensure cookie applies to all paths
 });
 
@@ -190,6 +190,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+app.UseSession(); 
 // Configure different behavior for development vs production
 if (app.Environment.IsDevelopment())
 {
@@ -215,13 +216,8 @@ else
     
     app.UseCors("AllowAll");
 }
-
 app.UseHttpsRedirection();
-
-app.UseSession(); // Enable session middleware
 app.UseAuthentication();
 app.UseAuthorization();
-
 app.MapControllers();
-
 app.Run();
