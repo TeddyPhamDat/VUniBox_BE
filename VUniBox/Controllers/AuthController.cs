@@ -14,6 +14,7 @@ using VUniBox.Services.Authentication;
 using BCrypt.Net;
 using Microsoft.EntityFrameworkCore;
 using Google.Apis.Auth;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace VUniBox.Controllers
 {
@@ -29,16 +30,19 @@ namespace VUniBox.Controllers
     {
         private readonly IJwtService _jwtService;
         private readonly VUniBoxContext _context;
+        private readonly IMemoryCache _memoryCache;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="AuthController"/> class.
         /// </summary>
         /// <param name="jwtService">The JWT service for token generation.</param>
         /// <param name="context">The database context.</param>
-        public AuthController(IJwtService jwtService, VUniBoxContext context)
+        /// <param name="memoryCache">The memory cache for temporary data.</param>
+        public AuthController(IJwtService jwtService, VUniBoxContext context, IMemoryCache memoryCache)
         {
             _jwtService = jwtService;
             _context = context;
+            _memoryCache = memoryCache;
         }
 
         /// <summary>
@@ -382,16 +386,23 @@ namespace VUniBox.Controllers
                     return BadRequest(ApiResponse<string>.Fail("Tài khoản đã bị khóa", 400));
                 }
 
-                // Store verified user info in session for password reset
-                HttpContext.Session.SetString("ForgotPassword_Email", request.Email);
-                HttpContext.Session.SetString("ForgotPassword_Phone", convertedPhone);
-                HttpContext.Session.SetString("ForgotPassword_Expiry", DateTime.UtcNow.AddMinutes(15).ToString());
+                // Store verified user info in memory cache for password reset
+                var cacheKey = $"forgot_password_{request.Email}_{convertedPhone}";
+                var cacheValue = new
+                {
+                    Email = request.Email,
+                    PhoneNumber = convertedPhone,
+                    VerifiedAt = DateTime.UtcNow,
+                    ExpiresAt = DateTime.UtcNow.AddMinutes(15)
+                };
+                
+                _memoryCache.Set(cacheKey, cacheValue, TimeSpan.FromMinutes(15));
 
-                Console.WriteLine($"[DEBUG] Verify Success - Session ID: {HttpContext.Session.Id}");
+                Console.WriteLine($"[DEBUG] Verify Success - Cache Key: {cacheKey}");
                 Console.WriteLine($"[DEBUG] Stored Email: {request.Email}");
                 Console.WriteLine($"[DEBUG] Stored Phone: {convertedPhone}");
 
-                return Ok(ApiResponse<string>.Success("", "Xác thực thành công. Bạn có thể đặt lại mật khẩu mới."));
+                return Ok(ApiResponse<string>.Success("", "Xác thực thành công. Bạn có 15 phút để đặt lại mật khẩu mới."));
             }
             catch (Exception ex)
             {
@@ -400,64 +411,57 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
-        /// Step 2: Reset password using session data from verification step
+        /// Step 2: Reset password using email and phone from request (must be verified first)
         /// </summary>
         [HttpPost("forgot-password/reset")]
         public async Task<IActionResult> ResetForgotPassword([FromBody] ResetPasswordRequest request)
         {
             try
             {
-                // ADD DEBUG LOGGING
-                Console.WriteLine($"[DEBUG] Reset Password - Session ID: {HttpContext.Session.Id}");
-                Console.WriteLine($"[DEBUG] Reset Password - Session Keys: {string.Join(", ", HttpContext.Session.Keys)}");
-
-                if (string.IsNullOrWhiteSpace(request.NewPassword) || 
+                if (string.IsNullOrWhiteSpace(request.Email) || 
+                    string.IsNullOrWhiteSpace(request.PhoneNumber) ||
+                    string.IsNullOrWhiteSpace(request.NewPassword) || 
                     string.IsNullOrWhiteSpace(request.ConfirmPassword))
                 {
-                    Console.WriteLine("[DEBUG] Password fields are empty");
-                    return BadRequest(ApiResponse<string>.Fail("Mật khẩu mới và xác nhận mật khẩu không được để trống", 400));
+                    return BadRequest(ApiResponse<string>.Fail("Tất cả các trường không được để trống", 400));
                 }
 
                 if (request.NewPassword != request.ConfirmPassword)
                 {
-                    Console.WriteLine("[DEBUG] Password confirmation mismatch");
                     return BadRequest(ApiResponse<string>.Fail("Mật khẩu xác nhận không khớp", 400));
                 }
 
                 if (request.NewPassword.Length < 6)
                 {
-                    Console.WriteLine("[DEBUG] Password too short");
                     return BadRequest(ApiResponse<string>.Fail("Mật khẩu phải có ít nhất 6 ký tự", 400));
                 }
 
-                // Get verified user info from session
-                var sessionEmail = HttpContext.Session.GetString("ForgotPassword_Email");
-                var sessionPhone = HttpContext.Session.GetString("ForgotPassword_Phone");
-                var sessionExpiry = HttpContext.Session.GetString("ForgotPassword_Expiry");
-
-                Console.WriteLine($"[DEBUG] Session Email: '{sessionEmail ?? "NULL"}'");
-                Console.WriteLine($"[DEBUG] Session Phone: '{sessionPhone ?? "NULL"}'");
-                Console.WriteLine($"[DEBUG] Session Expiry: '{sessionExpiry ?? "NULL"}'");
-
-                if (string.IsNullOrEmpty(sessionEmail) || string.IsNullOrEmpty(sessionPhone) || string.IsNullOrEmpty(sessionExpiry))
+                // Validate email format
+                if (!IsValidEmail(request.Email))
                 {
-                    Console.WriteLine("[DEBUG] Session data missing - returning 400");
-                    return BadRequest(ApiResponse<string>.Fail("Vui lòng thực hiện xác thực email và số điện thoại trước", 400));
+                    return BadRequest(ApiResponse<string>.Fail("Định dạng email không hợp lệ", 400));
                 }
 
-                // Check if session has expired
-                if (DateTime.TryParse(sessionExpiry, out var expiryTime) && DateTime.UtcNow > expiryTime)
+                // Convert phone number if needed
+                var convertedPhone = request.PhoneNumber;
+                if (request.PhoneNumber.StartsWith("0") && request.PhoneNumber.Length >= 10)
                 {
-                    // Clear expired session
-                    HttpContext.Session.Remove("ForgotPassword_Email");
-                    HttpContext.Session.Remove("ForgotPassword_Phone");
-                    HttpContext.Session.Remove("ForgotPassword_Expiry");
-                    return BadRequest(ApiResponse<string>.Fail("Phiên xác thực đã hết hạn. Vui lòng thực hiện lại việc xác thực", 400));
+                    convertedPhone = "+84" + request.PhoneNumber.Substring(1);
                 }
 
-                // Find user by email and phone from session
+                // Check if verification exists in memory cache
+                var cacheKey = $"forgot_password_{request.Email}_{convertedPhone}";
+                if (!_memoryCache.TryGetValue(cacheKey, out var cachedValue))
+                {
+                    Console.WriteLine($"[DEBUG] Cache key not found: {cacheKey}");
+                    return BadRequest(ApiResponse<string>.Fail("Vui lòng thực hiện xác thực email và số điện thoại trước hoặc thời gian xác thực đã hết hạn", 400));
+                }
+
+                Console.WriteLine($"[DEBUG] Cache found for key: {cacheKey}");
+
+                // Find user by email and phone
                 var user = await _context.Users.FirstOrDefaultAsync(u => 
-                    u.Email == sessionEmail && u.PhoneNumber == sessionPhone);
+                    u.Email == request.Email && u.PhoneNumber == convertedPhone);
 
                 if (user == null)
                 {
@@ -475,10 +479,10 @@ namespace VUniBox.Controllers
 
                 await _context.SaveChangesAsync();
 
-                // Clear session after successful password reset
-                HttpContext.Session.Remove("ForgotPassword_Email");
-                HttpContext.Session.Remove("ForgotPassword_Phone");
-                HttpContext.Session.Remove("ForgotPassword_Expiry");
+                // Remove cache entry after successful password reset (one-time use)
+                _memoryCache.Remove(cacheKey);
+
+                Console.WriteLine($"[DEBUG] Password reset successful for: {request.Email}");
 
                 return Ok(ApiResponse<string>.Success("", "Đặt lại mật khẩu thành công"));
             }

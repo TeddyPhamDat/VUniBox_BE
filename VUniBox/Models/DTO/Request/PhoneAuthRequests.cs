@@ -123,10 +123,23 @@ namespace VUniBox.Models.DTO.Request
     }
 
     /// <summary>
-    /// Reset password request - only password fields needed after verification
+    /// Reset password request - includes email and phone for verification
     /// </summary>
     public class ResetPasswordRequest
     {
+        /// <summary>
+        /// Email address for verification
+        /// </summary>
+        [Required(ErrorMessage = "Email không được để trống")]
+        [EmailAddress(ErrorMessage = "Định dạng email không hợp lệ")]
+        public string Email { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Phone number for verification
+        /// </summary>
+        [Required(ErrorMessage = "Số điện thoại không được để trống")]
+        public string PhoneNumber { get; set; } = string.Empty;
+
         /// <summary>
         /// New password (min 6 characters)
         /// </summary>

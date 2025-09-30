@@ -108,6 +108,9 @@ builder.Services.AddSession(options =>
     options.Cookie.Path = "/"; // Ensure cookie applies to all paths
 });
 
+// Register Memory Cache for forgot password verification
+builder.Services.AddMemoryCache();
+
 // Register Session Chat Service
 builder.Services.AddScoped<SessionChatService>();
 builder.Services.AddHttpContextAccessor();
