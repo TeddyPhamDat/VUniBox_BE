@@ -176,19 +176,34 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll",
         builder => builder
-            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173")
+            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173", "https://vunibox.vercel.app")
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials());
-    
-    // Add specific policy for development
+
     options.AddPolicy("Development",
         builder => builder
-            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173")
+            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173", "https://vunibox.vercel.app")
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials());
+
+    options.AddPolicy("Production",
+        builder => builder
+            .WithOrigins("http://103.253.146.132:5000", "https://vunibox.vercel.app")
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials());
 });
+
+// Configure Kestrel to listen on HTTP only in production
+if (builder.Environment.IsProduction())
+{
+    builder.WebHost.ConfigureKestrel(serverOptions =>
+    {
+        serverOptions.ListenAnyIP(5000); // HTTP only
+    });
+}
 
 
 var app = builder.Build();
@@ -217,9 +232,15 @@ else
         c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
     });
     
-    app.UseCors("AllowAll");
+    app.UseCors("Production");
 }
-app.UseHttpsRedirection();
+
+// Only use HTTPS redirection in development
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
