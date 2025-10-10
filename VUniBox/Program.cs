@@ -221,7 +221,7 @@ if (app.Environment.IsDevelopment())
     });
     
     // Use more permissive CORS in development
-    app.UseCors("Development");
+    app.UseCors("AllowAll");
 }
 else
 {
@@ -232,7 +232,7 @@ else
         c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
     });
     
-    app.UseCors("Production");
+    app.UseCors("AllowAll");
 }
 
 // Only use HTTPS redirection in development
