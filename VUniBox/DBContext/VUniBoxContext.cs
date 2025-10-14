@@ -34,7 +34,7 @@ public partial class VUniBoxContext : DbContext
     {
         modelBuilder.Entity<Citations>(entity =>
         {
-            entity.HasKey(e => e.CitationId).HasName("PK__Citation__EAD2AD1B941F179D");
+            entity.HasKey(e => e.CitationId).HasName("PK__Citation__EAD2AD1BBDB5DA6A");
 
             entity.Property(e => e.CitationId).HasColumnName("CitationID");
             entity.Property(e => e.CreatedAt)
@@ -57,10 +57,10 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<DocumentStorage>(entity =>
         {
-            entity.HasKey(e => e.DocumentStorageId).HasName("PK__Document__7381F341CDF55673");
+            entity.HasKey(e => e.DocumentStorageId).HasName("PK__Document__7381F34129B51EAF");
 
             entity.Property(e => e.DocumentStorageId).HasColumnName("DocumentStorageID");
-            entity.Property(e => e.AuthorName).HasMaxLength(255);
+            entity.Property(e => e.AuthorName).HasMaxLength(1000);
             entity.Property(e => e.Authors).HasMaxLength(500);
             entity.Property(e => e.CitationStyle).HasMaxLength(50);
             entity.Property(e => e.CreatedAt)
@@ -114,7 +114,7 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<Documents>(entity =>
         {
-            entity.HasKey(e => e.DocumentId).HasName("PK__Document__1ABEEF6F63168CC3");
+            entity.HasKey(e => e.DocumentId).HasName("PK__Document__1ABEEF6F84186A2A");
 
             entity.Property(e => e.DocumentId).HasColumnName("DocumentID");
             entity.Property(e => e.Author).HasMaxLength(500);
@@ -163,7 +163,7 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<Payments>(entity =>
         {
-            entity.HasKey(e => e.PaymentId).HasName("PK__Payments__9B556A5835F2786E");
+            entity.HasKey(e => e.PaymentId).HasName("PK__Payments__9B556A58FD9EF102");
 
             entity.Property(e => e.PaymentId).HasColumnName("PaymentID");
             entity.Property(e => e.Amount).HasColumnType("decimal(10, 2)");
@@ -196,7 +196,7 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<Plans>(entity =>
         {
-            entity.HasKey(e => e.PlanId).HasName("PK__Plans__755C22D71A09705E");
+            entity.HasKey(e => e.PlanId).HasName("PK__Plans__755C22D7CEB01FF1");
 
             entity.Property(e => e.PlanId).HasColumnName("PlanID");
             entity.Property(e => e.DurationMonths).HasDefaultValue(1);
@@ -209,7 +209,7 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<Subscriptions>(entity =>
         {
-            entity.HasKey(e => e.SubscriptionId).HasName("PK__Subscrip__9A2B24BD3FC93C12");
+            entity.HasKey(e => e.SubscriptionId).HasName("PK__Subscrip__9A2B24BDACDA71CC");
 
             entity.Property(e => e.SubscriptionId).HasColumnName("SubscriptionID");
             entity.Property(e => e.PaymentId).HasColumnName("PaymentID");
@@ -236,7 +236,7 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<UsageStats>(entity =>
         {
-            entity.HasKey(e => e.StatId).HasName("PK__UsageSta__3A162D1E7EEABD44");
+            entity.HasKey(e => e.StatId).HasName("PK__UsageSta__3A162D1E5669C01F");
 
             entity.Property(e => e.StatId).HasColumnName("StatID");
             entity.Property(e => e.ChatbotUsed).HasDefaultValue(0);
@@ -257,11 +257,12 @@ public partial class VUniBoxContext : DbContext
 
         modelBuilder.Entity<Users>(entity =>
         {
-            entity.HasKey(e => e.UserId).HasName("PK__Users__1788CCAC6032CCC4");
+            entity.HasKey(e => e.UserId).HasName("PK__Users__1788CCAC9A9D74C8");
 
-            entity.HasIndex(e => e.Email, "UQ__Users__A9D1053449EB6131").IsUnique();
+            entity.HasIndex(e => e.Email, "UQ__Users__A9D1053447F42EF5").IsUnique();
 
             entity.Property(e => e.UserId).HasColumnName("UserID");
+            entity.Property(e => e.AvatarUrl).HasMaxLength(255);
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("(getdate())")
                 .HasColumnType("datetime");

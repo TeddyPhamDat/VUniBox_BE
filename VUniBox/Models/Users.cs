@@ -29,6 +29,8 @@ public partial class Users
 
     public bool? IsActive { get; set; }
 
+    public string AvatarUrl { get; set; }
+
     public virtual ICollection<Citations> Citations { get; set; } = new List<Citations>();
 
     public virtual Plans CurrentPlan { get; set; }

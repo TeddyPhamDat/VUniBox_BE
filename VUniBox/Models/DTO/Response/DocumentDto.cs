@@ -27,9 +27,17 @@ namespace VUniBox.Models.DTO.Response
         /// </summary>
         public string SourceUrl { get; set; } = string.Empty;
         /// <summary>
-        /// Gets or sets the type of the document.
+        /// Gets or sets the type of the document (string name).
         /// </summary>
-        public int Type { get; set; } 
+        public string Type { get; set; } = string.Empty;
+        /// <summary>
+        /// Gets or sets the numeric type ID of the document.
+        /// </summary>
+        public int TypeId { get; set; }
+        /// <summary>
+        /// Gets the Vietnamese display name for the document type.
+        /// </summary>
+        public string TypeDisplayName => GetTypeDisplayName(Type);
         /// <summary>
         /// Gets or sets the status of the document.
         /// </summary>
@@ -131,7 +139,8 @@ namespace VUniBox.Models.DTO.Response
             Title = document.Title ?? string.Empty;
             FilePath = document.FilePath ?? string.Empty;
             SourceUrl = document.SourceUrl ?? string.Empty;
-            Type = document.DocumentType;
+            Type = ((Models.Enum.DocumentType)document.DocumentType).ToString();
+            TypeId = document.DocumentType;
             Status = document.Status ?? string.Empty;
             CreatedAt = document.CreatedAt;
             ExpiryDate = document.TrashDate;
@@ -153,6 +162,25 @@ namespace VUniBox.Models.DTO.Response
             Language = document.Language ?? string.Empty;
             RetrievedDate = document.RetrievedDate;
             CitationStyle = document.CitationStyle ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Gets the Vietnamese display name for a document type.
+        /// </summary>
+        /// <param name="type">The document type string.</param>
+        /// <returns>The Vietnamese display name.</returns>
+        private static string GetTypeDisplayName(string type)
+        {
+            return type switch
+            {
+                "Word" => "Tài liệu Word",
+                "Pdf" => "Tài liệu PDF",
+                "Research" => "Nghiên cứu khoa học",
+                "Newspaper" => "Báo chí",
+                "Book" => "Sách",
+                "Others" => "Khác",
+                _ => type
+            };
         }
     }
 }

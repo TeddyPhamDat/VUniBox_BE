@@ -187,23 +187,7 @@ builder.Services.AddCors(options =>
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials());
-
-    options.AddPolicy("Production",
-        builder => builder
-            .WithOrigins("http://103.253.146.132:5000", "https://vunibox.vercel.app")
-            .AllowAnyHeader()
-            .AllowAnyMethod()
-            .AllowCredentials());
 });
-
-// Configure Kestrel to listen on HTTP only in production
-if (builder.Environment.IsProduction())
-{
-    builder.WebHost.ConfigureKestrel(serverOptions =>
-    {
-        serverOptions.ListenAnyIP(5000); // HTTP only
-    });
-}
 
 
 var app = builder.Build();
@@ -221,7 +205,7 @@ if (app.Environment.IsDevelopment())
     });
     
     // Use more permissive CORS in development
-    app.UseCors("AllowAll");
+    app.UseCors("Development");
 }
 else
 {
@@ -234,13 +218,15 @@ else
     
     app.UseCors("AllowAll");
 }
-
-// Only use HTTPS redirection in development
-if (app.Environment.IsDevelopment())
+// Configure static files serving for uploaded images
+app.UseStaticFiles(new StaticFileOptions
 {
-    app.UseHttpsRedirection();
-}
+    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(
+        Path.Combine(Directory.GetCurrentDirectory(), "uploads")),
+    RequestPath = "/uploads"
+});
 
+app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

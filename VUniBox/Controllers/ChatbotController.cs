@@ -37,6 +37,7 @@ namespace VUniBox.Controllers
 
         /// <summary>
         /// Sends a message to the chatbot and receives a response.
+        /// Note: Citation generation is restricted - use the dedicated Citation feature instead.
         /// </summary>
         /// <param name="request">The chat message request containing the user's message.</param>
         /// <returns>An <see cref="IActionResult"/> with the chatbot's response and message count.</returns>

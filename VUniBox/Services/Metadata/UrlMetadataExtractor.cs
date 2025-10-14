@@ -242,7 +242,7 @@ namespace VUniBox.Services.Metadata
                 }
                 catch (Exception ex)
                 {
-                    metadata.Description = $"Error extracting research metadata: {ex.Message}";
+                    metadata.Description = $"Lỗi trích xuất metadata nghiên cứu: {ex.Message}";
                 }
 
                 return metadata;
@@ -417,13 +417,13 @@ namespace VUniBox.Services.Metadata
                     // Set language and retrieved date
                     if (string.IsNullOrEmpty(metadata.Language))
                     {
-                        metadata.Language = "en";
+                        metadata.Language = "vi";
                     }
                     metadata.RetrievedDate = DateTime.UtcNow;
                 }
                 catch (Exception ex)
                 {
-                    metadata.Description = $"Error extracting book metadata: {ex.Message}";
+                    metadata.Description = $"Lỗi trích xuất metadata sách: {ex.Message}";
                 }
 
                 return metadata;
@@ -540,13 +540,13 @@ namespace VUniBox.Services.Metadata
                     // Set language and retrieved date
                     if (string.IsNullOrEmpty(metadata.Language))
                     {
-                        metadata.Language = "en";
+                        metadata.Language = "vi";
                     }
                     metadata.RetrievedDate = DateTime.UtcNow;
                 }
                 catch (Exception ex)
                 {
-                    metadata.Description = $"Error extracting news metadata: {ex.Message}";
+                    metadata.Description = $"Lỗi trích xuất metadata tin tức: {ex.Message}";
                 }
 
                 // Add fallback for Vietnamese news sites that block scraping
@@ -577,9 +577,9 @@ namespace VUniBox.Services.Metadata
                             Console.WriteLine("[DEBUG] Extracted publisher from URL: " + metadata.Publisher);
                             
                             // Clear the error description since we have valid data now
-                            if (metadata.Description?.Contains("Error extracting news metadata") == true)
+                            if (metadata.Description?.Contains("Lỗi trích xuất metadata tin tức") == true)
                             {
-                                metadata.Description = "Metadata extracted from URL pattern (Vietnamese news site)";
+                                metadata.Description = "Metadata được trích xuất từ cấu trúc URL (trang tin tức Việt Nam)";
                             }
                         }
                     }
@@ -621,8 +621,8 @@ namespace VUniBox.Services.Metadata
                 if (string.IsNullOrEmpty(html))
                 {
                     Console.WriteLine($"[ERROR] HTML content is null or empty");
-                    metadata.Title = "Error: No content retrieved";
-                    metadata.Description = "Failed to retrieve HTML content from URL";
+                    metadata.Title = "Lỗi: Không thể truy cập nội dung";
+                    metadata.Description = "Không thể truy xuất nội dung HTML từ URL";
                     return metadata;
                 }
                 
@@ -731,7 +731,7 @@ namespace VUniBox.Services.Metadata
 
                 // Extract language
                 var langElement = doc.DocumentNode.SelectSingleNode("//html[@lang]");
-                metadata.Language = langElement != null ? GetAttributeValue(langElement, "lang") ?? "en" : "en";
+                metadata.Language = langElement != null ? GetAttributeValue(langElement, "lang") ?? "vi" : "vi";
 
                 // Set retrieved date
                 metadata.RetrievedDate = DateTime.UtcNow;
@@ -740,7 +740,7 @@ namespace VUniBox.Services.Metadata
                 if (string.IsNullOrEmpty(metadata.Title))
                 {
                     var uri = new Uri(url);
-                    metadata.Title = $"Document from {uri.Host}";
+                    metadata.Title = $"Tài liệu từ {uri.Host}";
                 }
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("403") || ex.Message.Contains("Forbidden"))
@@ -781,11 +781,11 @@ namespace VUniBox.Services.Metadata
             var metadata = new DocumentMetadataDto
             {
                 URL = url,
-                Title = extractedTitle ?? $"{publicationType} from {source}",
-                Description = "Content could not be automatically extracted due to access restrictions. Please visit the original URL.",
-                Abstract = "Content could not be automatically extracted due to access restrictions. Please visit the original URL.",
+                Title = extractedTitle ?? $"{publicationType} từ {source}",
+                Description = "Không thể trích xuất nội dung tự động do hạn chế truy cập. Vui lòng truy cập URL gốc.",
+                Abstract = "Không thể trích xuất nội dung tự động do hạn chế truy cập. Vui lòng truy cập URL gốc.",
                 Source = source,
-                Language = "en",
+                Language = "vi",
                 RetrievedDate = DateTime.UtcNow
             };
             
@@ -880,7 +880,7 @@ namespace VUniBox.Services.Metadata
                     var match = System.Text.RegularExpressions.Regex.Match(path, @"/abs/(\d+\.\d+)");
                     if (match.Success)
                     {
-                        return $"arXiv Preprint {match.Groups[1].Value}";
+                        return $"Bài nghiên cứu arXiv {match.Groups[1].Value}";
                     }
                 }
                 
@@ -901,13 +901,13 @@ namespace VUniBox.Services.Metadata
                     var pmcMatch = System.Text.RegularExpressions.Regex.Match(url, @"PMC(\d+)");
                     if (pmcMatch.Success)
                     {
-                        return $"PubMed Article PMC{pmcMatch.Groups[1].Value}";
+                        return $"Bài báo PubMed PMC{pmcMatch.Groups[1].Value}";
                     }
                     
                     var pmidMatch = System.Text.RegularExpressions.Regex.Match(url, @"pmid/(\d+)");
                     if (pmidMatch.Success)
                     {
-                        return $"PubMed Article PMID:{pmidMatch.Groups[1].Value}";
+                        return $"Bài báo PubMed PMID:{pmidMatch.Groups[1].Value}";
                     }
                 }
                 
@@ -949,35 +949,35 @@ namespace VUniBox.Services.Metadata
         /// <returns>A tuple containing source name and publication type.</returns>
         private (string source, string publicationType) DetermineSourceAndType(string domain, DocumentType documentType)
         {
-            // Academic/Research sites
-            if (domain.Contains("researchgate")) return ("ResearchGate", "Academic Paper");
-            if (domain.Contains("arxiv")) return ("arXiv", "Preprint");
-            if (domain.Contains("ieee")) return ("IEEE Xplore", "Technical Paper");
-            if (domain.Contains("pubmed") || domain.Contains("ncbi")) return ("PubMed", "Medical Research");
-            if (domain.Contains("scholar.google")) return ("Google Scholar", "Academic Paper");
-            if (domain.Contains("semanticscholar")) return ("Semantic Scholar", "Academic Paper");
-            if (domain.Contains("acm.org")) return ("ACM Digital Library", "Technical Paper");
-            if (domain.Contains("springer")) return ("Springer", "Academic Paper");
-            if (domain.Contains("sciencedirect")) return ("ScienceDirect", "Academic Paper");
-            if (domain.Contains("wiley")) return ("Wiley Online Library", "Academic Paper");
+        // Academic/Research sites
+        if (domain.Contains("researchgate")) return ("ResearchGate", "Bài nghiên cứu khoa học");
+        if (domain.Contains("arxiv")) return ("arXiv", "Bài nghiên cứu sơ bộ");
+        if (domain.Contains("ieee")) return ("IEEE Xplore", "Bài báo kỹ thuật");
+        if (domain.Contains("pubmed") || domain.Contains("ncbi")) return ("PubMed", "Nghiên cứu y học");
+        if (domain.Contains("scholar.google")) return ("Google Scholar", "Bài nghiên cứu khoa học");
+        if (domain.Contains("semanticscholar")) return ("Semantic Scholar", "Bài nghiên cứu khoa học");
+        if (domain.Contains("acm.org")) return ("ACM Digital Library", "Bài báo kỹ thuật");
+        if (domain.Contains("springer")) return ("Springer", "Bài nghiên cứu khoa học");
+        if (domain.Contains("sciencedirect")) return ("ScienceDirect", "Bài nghiên cứu khoa học");
+        if (domain.Contains("wiley")) return ("Wiley Online Library", "Bài nghiên cứu khoa học");
+        
+        // Vietnamese news sites
+        if (domain.Contains("vnexpress")) return ("VnExpress", "Bài báo");
+        if (domain.Contains("tuoitre")) return ("Tuổi Trẻ Online", "Bài báo");
+        if (domain.Contains("thanhnien")) return ("Thanh Niên", "Bài báo");
+        if (domain.Contains("dantri")) return ("Dân Trí", "Bài báo");
+        if (domain.Contains("vietnamnet")) return ("VietNamNet", "Bài báo");
             
-            // Vietnamese news sites
-            if (domain.Contains("vnexpress")) return ("VnExpress", "News Article");
-            if (domain.Contains("tuoitre")) return ("Tuổi Trẻ Online", "News Article");
-            if (domain.Contains("thanhnien")) return ("Thanh Niên", "News Article");
-            if (domain.Contains("dantri")) return ("Dân Trí", "News Article");
-            if (domain.Contains("vietnamnet")) return ("VietNamNet", "News Article");
+        // International news sites
+        if (domain.Contains("bbc")) return ("BBC", "Bài báo");
+        if (domain.Contains("cnn")) return ("CNN", "Bài báo");
+        if (domain.Contains("reuters")) return ("Reuters", "Bài báo");
+        if (domain.Contains("nytimes")) return ("The New York Times", "Bài báo");
             
-            // International news sites
-            if (domain.Contains("bbc")) return ("BBC", "News Article");
-            if (domain.Contains("cnn")) return ("CNN", "News Article");
-            if (domain.Contains("reuters")) return ("Reuters", "News Article");
-            if (domain.Contains("nytimes")) return ("The New York Times", "News Article");
-            
-            // Book sites
-            if (domain.Contains("amazon")) return ("Amazon", "Book");
-            if (domain.Contains("goodreads")) return ("Goodreads", "Book");
-            if (domain.Contains("books.google")) return ("Google Books", "Book");
+        // Book sites
+        if (domain.Contains("amazon")) return ("Amazon", "Sách");
+        if (domain.Contains("goodreads")) return ("Goodreads", "Sách");
+        if (domain.Contains("books.google")) return ("Google Books", "Sách");
             
             // Fallback based on document type
             var source = domain.Replace("www.", "").Split('.')[0];
@@ -985,10 +985,10 @@ namespace VUniBox.Services.Metadata
             
             var publicationType = documentType switch
             {
-                DocumentType.Research => "Academic Paper",
-                DocumentType.Book => "Book",
-                DocumentType.Newspaper => "News Article",
-                _ => "Web Document"
+                DocumentType.Research => "Bài nghiên cứu khoa học",
+                DocumentType.Book => "Sách",
+                DocumentType.Newspaper => "Bài báo",
+                _ => "Tài liệu web"
             };
             
             return (source, publicationType);
