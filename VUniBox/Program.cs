@@ -200,8 +200,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
-        c.SwaggerEndpoint("/swagger/v2/swagger.json", "VUniBox API v2");
-        c.RoutePrefix = "swagger"; // Serve at /swagger
+        c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
+        // c.RoutePrefix = string.Empty; // Uncomment to serve at root
     });
     
     // Use more permissive CORS in development
@@ -213,8 +213,7 @@ else
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
-        c.SwaggerEndpoint("/swagger/v2/swagger.json", "VUniBox API v2");
-        c.RoutePrefix = "swagger"; // Serve at /swagger for production too
+        c.SwaggerEndpoint("/swagger/v2/swagger.json", "EduVision API v2");
     });
     
     app.UseCors("AllowAll");
