@@ -4,6 +4,8 @@ using System.Text.RegularExpressions;
 using VUniBox.Models.DTO;
 using System.Web;
 using System.IO.Compression;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace VUniBox.Services.Metadata
 {
@@ -86,7 +88,7 @@ namespace VUniBox.Services.Metadata
                 }
                 catch
                 {
-                    return "Bài báo";
+                    return "Tài liệu";
                 }
             }
         }
@@ -113,7 +115,7 @@ namespace VUniBox.Services.Metadata
             }
             catch
             {
-                return "Báo điện tử";
+                return "Trang web";
             }
         }
         
@@ -142,6 +144,19 @@ namespace VUniBox.Services.Metadata
     {
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
+        
+        // Performance optimization: Cache recent results to avoid duplicate requests
+        private static readonly ConcurrentDictionary<string, (DocumentMetadataDto metadata, DateTime expiry)> _cache 
+            = new ConcurrentDictionary<string, (DocumentMetadataDto, DateTime)>();
+        
+        // Performance optimization: Track failed URLs to avoid retrying immediately
+        private static readonly ConcurrentDictionary<string, DateTime> _failedUrls 
+            = new ConcurrentDictionary<string, DateTime>();
+        
+        // Configuration for timeout and cache
+        private static readonly TimeSpan REQUEST_TIMEOUT = TimeSpan.FromSeconds(15); // Reduced from default
+        private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan FAILED_URL_COOLDOWN = TimeSpan.FromMinutes(5);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="UrlMetadataExtractor"/> class.
@@ -153,7 +168,8 @@ namespace VUniBox.Services.Metadata
             _httpClient = httpClient;
             _configuration = configuration;
             
-            // Configure HttpClient for automatic decompression if not already configured
+            // Configure HttpClient for performance
+            _httpClient.Timeout = REQUEST_TIMEOUT;
             if (!_httpClient.DefaultRequestHeaders.Contains("Accept-Encoding"))
             {
                 _httpClient.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
@@ -168,33 +184,121 @@ namespace VUniBox.Services.Metadata
         /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractMetadataAsync(string url, DocumentType documentType)
         {
+            var stopwatch = Stopwatch.StartNew();
+            
             try
             {
                 // Clean and validate URL first
                 url = CleanAndValidateUrl(url);
+                Console.WriteLine($"[PERF] Starting metadata extraction for: {url}");
                 
-                switch (documentType)
+                // Performance optimization: Check cache first
+                var cacheKey = $"{url}_{documentType}";
+                if (_cache.TryGetValue(cacheKey, out var cached) && cached.expiry > DateTime.UtcNow)
                 {
-                    case DocumentType.Research:
-                        return await ExtractFromResearchSiteAsync(url);
-                    case DocumentType.Book:
-                        return await ExtractFromBookSiteAsync(url);
-                    case DocumentType.Newspaper:
-                        return await ExtractFromNewsSiteAsync(url);
-                    default:
-                        return await ExtractGenericMetadataAsync(url);
+                    Console.WriteLine($"[PERF] Cache hit for {url} - took {stopwatch.ElapsedMilliseconds}ms");
+                    return cached.metadata;
                 }
+                
+                // Performance optimization: Check if URL recently failed
+                if (_failedUrls.TryGetValue(url, out var failTime) && 
+                    DateTime.UtcNow - failTime < FAILED_URL_COOLDOWN)
+                {
+                    Console.WriteLine($"[PERF] URL recently failed, using fallback immediately: {url}");
+                    return CreateFallbackMetadata(url, documentType, "Recently failed - using cached fallback");
+                }
+                
+                DocumentMetadataDto result;
+                
+                // Use timeout wrapper for all extraction methods
+                using (var cts = new CancellationTokenSource(REQUEST_TIMEOUT))
+                {
+                    switch (documentType)
+                    {
+                        case DocumentType.Research:
+                            result = await ExtractFromResearchSiteAsync(url).ConfigureAwait(false);
+                            break;
+                        case DocumentType.Book:
+                            result = await ExtractFromBookSiteAsync(url).ConfigureAwait(false);
+                            break;
+                        case DocumentType.Newspaper:
+                            result = await ExtractFromNewsSiteAsync(url).ConfigureAwait(false);
+                            break;
+                        default:
+                            result = await ExtractGenericMetadataAsync(url).ConfigureAwait(false);
+                            break;
+                    }
+                }
+                
+                // Cache successful result
+                _cache.TryAdd(cacheKey, (result, DateTime.UtcNow.Add(CACHE_DURATION)));
+                
+                // Clean old cache entries periodically
+                if (_cache.Count > 100)
+                {
+                    CleanExpiredCache();
+                }
+                
+                Console.WriteLine($"[PERF] Successfully extracted metadata for {url} - took {stopwatch.ElapsedMilliseconds}ms");
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine($"[PERF] Timeout after {stopwatch.ElapsedMilliseconds}ms for {url}");
+                _failedUrls.TryAdd(url, DateTime.UtcNow);
+                return CreateFallbackMetadata(url, documentType, "Request timeout");
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("403") || ex.Message.Contains("Forbidden"))
             {
-                Console.WriteLine($"[WARNING] Access denied for {url}, creating fallback metadata");
+                Console.WriteLine($"[PERF] Access denied for {url} after {stopwatch.ElapsedMilliseconds}ms, creating fallback metadata");
+                _failedUrls.TryAdd(url, DateTime.UtcNow);
                 return CreateFallbackMetadata(url, documentType);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ERROR] Failed to extract metadata from {url}: {ex.Message}");
+                Console.WriteLine($"[PERF] Failed to extract metadata from {url} after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
+                _failedUrls.TryAdd(url, DateTime.UtcNow);
                 return CreateFallbackMetadata(url, documentType, ex.Message);
             }
+        }
+        
+        /// <summary>
+        /// Cleans expired entries from cache to prevent memory leaks
+        /// </summary>
+        private static void CleanExpiredCache()
+        {
+            var now = DateTime.UtcNow;
+            var expiredKeys = _cache.Where(kvp => kvp.Value.expiry < now).Select(kvp => kvp.Key).ToList();
+            
+            foreach (var key in expiredKeys)
+            {
+                _cache.TryRemove(key, out _);
+            }
+            
+            // Also clean failed URLs that are past cooldown
+            var expiredFailedUrls = _failedUrls.Where(kvp => now - kvp.Value > FAILED_URL_COOLDOWN)
+                                              .Select(kvp => kvp.Key).ToList();
+            
+            foreach (var url in expiredFailedUrls)
+            {
+                _failedUrls.TryRemove(url, out _);
+            }
+            
+            Console.WriteLine($"[PERF] Cleaned {expiredKeys.Count} expired cache entries and {expiredFailedUrls.Count} expired failed URLs");
+        }
+        
+        /// <summary>
+        /// Force clear all cache entries (useful for clearing old Vietnamese fallback metadata)
+        /// </summary>
+        public static void ClearAllCache()
+        {
+            var cacheCount = _cache.Count;
+            var failedCount = _failedUrls.Count;
+            
+            _cache.Clear();
+            _failedUrls.Clear();
+            
+            Console.WriteLine($"[PERF] Force cleared {cacheCount} cache entries and {failedCount} failed URLs");
         }
 
         /// <summary>
@@ -982,18 +1086,18 @@ namespace VUniBox.Services.Metadata
         }
 
         /// <summary>
-        /// Creates fallback metadata when content cannot be extracted due to access restrictions.
+        /// Creates intelligent fallback metadata when extraction fails, with smart title extraction and professional descriptions.
         /// </summary>
-        /// <param name="url">The URL that couldn't be accessed.</param>
-        /// <param name="documentType">The classified document type.</param>
+        /// <param name="url">The URL that failed to extract.</param>
+        /// <param name="documentType">The type of document.</param>
         /// <param name="errorMessage">Optional error message for debugging.</param>
-        /// <returns>A fallback DocumentMetadataDto with basic information.</returns>
+        /// <returns>A fallback DocumentMetadataDto with intelligent information.</returns>
         private DocumentMetadataDto CreateFallbackMetadata(string url, DocumentType documentType, string errorMessage = null)
         {
             var uri = new Uri(url);
             var domain = uri.Host.ToLowerInvariant();
             
-            // Extract title from URL structure
+            // Extract intelligent title from URL structure
             var extractedTitle = ExtractTitleFromUrl(url, domain);
             
             // Determine source and publication type based on domain
@@ -1003,17 +1107,106 @@ namespace VUniBox.Services.Metadata
             {
                 URL = url,
                 Title = extractedTitle ?? $"{publicationType} từ {source}",
-                Description = "Không thể trích xuất nội dung tự động do hạn chế truy cập. Vui lòng truy cập URL gốc.",
-                Abstract = "Không thể trích xuất nội dung tự động do hạn chế truy cập. Vui lòng truy cập URL gốc.",
                 Source = source,
-                Language = "vi",
+                Language = domain.Contains(".vn") ? "vi" : "en", // Detect Vietnamese sites
                 RetrievedDate = DateTime.UtcNow
             };
+            
+            // Create intelligent descriptions based on site type
+            if (domain.Contains("researchgate"))
+            {
+                metadata.Description = "Nghiên cứu học thuật từ ResearchGate - Mạng xã hội dành cho các nhà khoa học và nghiên cứu";
+                metadata.Abstract = "Bài nghiên cứu học thuật - tóm tắt có sẵn trên nền tảng ResearchGate";
+                metadata.Publisher = "ResearchGate";
+                
+                // Try to extract more info from ResearchGate URL pattern
+                var rgMatch = System.Text.RegularExpressions.Regex.Match(url, @"publication/(\d+)_(.+)");
+                if (rgMatch.Success)
+                {
+                    var publicationId = rgMatch.Groups[1].Value;
+                    metadata.DOI = $"RG:{publicationId}";
+                    
+                    // If title wasn't extracted, try again with better parsing
+                    if (metadata.Title.StartsWith("Research") || metadata.Title.Contains("từ"))
+                    {
+                        var titlePart = rgMatch.Groups[2].Value;
+                        var cleanTitle = titlePart.Replace('_', ' ')
+                                                 .Replace('-', ' ')
+                                                 .Replace("%20", " ");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\s+", " ");
+                        cleanTitle = System.Web.HttpUtility.UrlDecode(cleanTitle);
+                        
+                        // Smart title case with proper handling of acronyms
+                        cleanTitle = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(cleanTitle.ToLower());
+                        
+                        // Fix common acronyms that should be uppercase
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bAi\b", "AI");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bIt\b", "IT");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bUi\b", "UI");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bUx\b", "UX");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bIoT\b", "IoT");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bNlp\b", "NLP");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bApi\b", "API");
+                        
+                        metadata.Title = cleanTitle;
+                    }
+                }
+            }
+            else if (domain.Contains("arxiv"))
+            {
+                metadata.Description = "Bài báo khoa học từ arXiv - Kho lưu trữ tiền ấn phẩm cho vật lý, toán học, khoa học máy tính";
+                metadata.Abstract = "Bài báo khoa học tiền ấn phẩm - toàn văn có sẵn trên arXiv";
+                metadata.Publisher = "arXiv";
+                metadata.Language = "en";
+            }
+            else if (domain.Contains("ieee"))
+            {
+                metadata.Description = "Tài liệu kỹ thuật từ IEEE - Viện Kỹ sư Điện và Điện tử";
+                metadata.Abstract = "Bài báo kỹ thuật IEEE - nội dung đầy đủ dành cho người đăng ký";
+                metadata.Publisher = "IEEE";
+            }
+            else if (domain.Contains("springer"))
+            {
+                metadata.Description = "Nghiên cứu học thuật từ Springer Nature - Nhà xuất bản khoa học quốc tế";
+                metadata.Abstract = "Bài báo nghiên cứu được xuất bản bởi Springer Nature";
+                metadata.Publisher = "Springer Nature";
+            }
+            else if (domain.Contains("pubmed"))
+            {
+                metadata.Description = "Nghiên cứu y sinh từ PubMed - Cơ sở dữ liệu y học của NIH";
+                metadata.Abstract = "Bài nghiên cứu y sinh học - tóm tắt có sẵn trong PubMed";
+                metadata.Publisher = "PubMed/NCBI";
+            }
+            else
+            {
+                // Generic fallback for other sites
+                metadata.Description = $"Tài liệu từ {source} - có thể cần đăng ký hoặc đăng nhập để truy cập";
+                metadata.Abstract = $"Tài liệu được lưu trữ trên nền tảng {source}";
+                metadata.Language = domain.Contains(".vn") ? "vi" : "en";
+            }
             
             // Add debug information if error message is provided
             if (!string.IsNullOrEmpty(errorMessage))
             {
-                Console.WriteLine($"[DEBUG] Fallback metadata created for {url}. Error: {errorMessage}");
+                // Determine if the error is related to ScraperAPI or network issues
+                if (errorMessage.Contains("ScraperAPI") || errorMessage.Contains("api_key"))
+                {
+                    Console.WriteLine($"[PERF] Tạo thông tin fallback cho {domain} do ScraperAPI gặp vấn đề. Tiêu đề: '{metadata.Title}'");
+                    metadata.Description += " (Lưu ý: Dịch vụ trích xuất tự động tạm thời gặp sự cố, thông tin hiển thị là cơ bản)";
+                }
+                else if (errorMessage.Contains("timeout") || errorMessage.Contains("Request timeout"))
+                {
+                    Console.WriteLine($"[PERF] Tạo thông tin fallback cho {domain} do timeout. Tiêu đề: '{metadata.Title}'");
+                    metadata.Description += " (Lưu ý: Trang web phản hồi chậm, thông tin hiển thị là cơ bản)";
+                }
+                else
+                {
+                    Console.WriteLine($"[PERF] Tạo thông tin fallback cho {domain}. Tiêu đề: '{metadata.Title}' | Lỗi: {errorMessage}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[PERF] Tạo thông tin fallback thông minh cho {domain}. Tiêu đề: '{metadata.Title}'");
             }
             
             return metadata;
@@ -1077,21 +1270,44 @@ namespace VUniBox.Services.Metadata
                 // ResearchGate: /publication/123456_Title_With_Underscores
                 if (domain.Contains("researchgate"))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(url, @"publication/\d+_(.+)");
+                    var match = System.Text.RegularExpressions.Regex.Match(url, @"publication/\d+_(.+?)(?:\?|#|$)");
                     if (match.Success)
                     {
-                        var title = match.Groups[1].Value.Replace('_', ' ');
-                        // Clean up common URL artifacts
-                        title = System.Text.RegularExpressions.Regex.Replace(title, @"\?.*$", ""); // Remove query parameters
-                        title = System.Text.RegularExpressions.Regex.Replace(title, @"#.*$", ""); // Remove fragments
-                        title = System.Web.HttpUtility.UrlDecode(title);
+                        var title = match.Groups[1].Value;
                         
-                        // Clean up common artifacts specific to ResearchGate
-                        title = title.Replace("-", " ");
-                        title = System.Text.RegularExpressions.Regex.Replace(title, @"\s+", " "); // Multiple spaces to single
+                        // Clean up URL encoding and formatting
+                        title = System.Web.HttpUtility.UrlDecode(title);
+                        title = title.Replace('_', ' ').Replace('-', ' ').Replace("%20", " ");
+                        
+                        // Remove common URL artifacts and clean whitespace
+                        title = System.Text.RegularExpressions.Regex.Replace(title, @"\s+", " ");
                         title = title.Trim();
                         
-                        return title;
+                        // Convert to proper title case for better readability
+                        if (!string.IsNullOrEmpty(title))
+                        {
+                            title = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(title.ToLower());
+                            
+                            // Fix common acronyms that should be uppercase
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bAi\b", "AI");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bIt\b", "IT");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bUi\b", "UI");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bUx\b", "UX");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bIoT\b", "IoT");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bNlp\b", "NLP");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bApi\b", "API");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bXi\b", "XI"); // For "Region XI"
+                            
+                            Console.WriteLine($"[PERF] Extracted ResearchGate title: '{title}'");
+                            return title;
+                        }
+                    }
+                    
+                    // Fallback: try to extract just the numeric ID for ResearchGate
+                    var idMatch = System.Text.RegularExpressions.Regex.Match(url, @"publication/(\d+)");
+                    if (idMatch.Success)
+                    {
+                        return $"ResearchGate Publication {idMatch.Groups[1].Value}";
                     }
                 }
                 
@@ -1225,10 +1441,9 @@ namespace VUniBox.Services.Metadata
             // ResearchGate alternatives
             if (originalUrl.Contains("researchgate.net"))
             {
-                // Mobile version
-                strategies.Add(originalUrl.Replace("www.researchgate.net", "m.researchgate.net"));
+                // Note: m.researchgate.net doesn't exist, only try working alternatives
                 
-                // Extract publication ID and try direct PDF
+                // Extract publication ID and try alternative patterns
                 var pubMatch = System.Text.RegularExpressions.Regex.Match(originalUrl, @"publication/(\d+)");
                 if (pubMatch.Success)
                 {
@@ -1297,385 +1512,313 @@ namespace VUniBox.Services.Metadata
         }
 
         /// <summary>
-        /// Retrieves HTML content using ScraperAPI when direct access fails.
+        /// Retrieves HTML content using ScraperAPI with optimized fast-fail strategies.
         /// </summary>
         /// <param name="url">The URL to fetch content from.</param>
         /// <returns>The HTML content as a string.</returns>
         private async Task<string> GetPageContentWithScraperAPI(string url)
         {
+            var stopwatch = Stopwatch.StartNew();
+            
             try
             {
                 var apiKey = _configuration["ScraperAPI:ApiKey"];
                 var baseUrl = _configuration["ScraperAPI:BaseUrl"];
                 
+                Console.WriteLine($"[DEBUG] ScraperAPI Config - ApiKey: {(string.IsNullOrEmpty(apiKey) ? "MISSING" : "PRESENT")}, BaseUrl: {baseUrl ?? "MISSING"}");
+                
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    throw new Exception("ScraperAPI key not configured");
+                    Console.WriteLine("[PERF] ScraperAPI key not configured - falling back to basic extraction");
+                    throw new Exception("ScraperAPI không được cấu hình - sử dụng trích xuất cơ bản");
+                }
+                
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    Console.WriteLine("[PERF] ScraperAPI BaseUrl not configured - using default");
+                    baseUrl = "http://api.scraperapi.com";
                 }
 
                 var encodedUrl = Uri.EscapeDataString(url);
+                Console.WriteLine($"[PERF] Starting ScraperAPI for: {url}");
                 
-                // Enhanced ScraperAPI parameters for academic sites - simplified parameters
-                var scraperUrl = $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&country_code=us&session_number=1&autoparse=true";
-                
-                Console.WriteLine($"[DEBUG] Using ScraperAPI: {scraperUrl.Replace(apiKey, "***API_KEY***")}");
-                
-                using var handler = new HttpClientHandler()
+                // Fast-fail: Try multiple configurations in parallel with shorter timeouts
+                var configurations = new[]
                 {
-                    AutomaticDecompression = System.Net.DecompressionMethods.None // Disable automatic decompression
+                    // Fast config - minimal parameters for speed
+                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=false",
+                    
+                    // Standard config - basic rendering
+                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&country_code=us",
+                    
+                    // Premium config - for difficult sites (only if needed)
+                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&premium_proxy=true&country_code=us&session_number=1"
                 };
+
+                // Use CancellationToken for timeout control
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12)); // Reduced from 20s to 12s total
                 
-                using var client = new HttpClient(handler);
-                client.Timeout = TimeSpan.FromMinutes(3); // ScraperAPI needs more time
-                
-                // Add headers to mimic real browser behavior - but don't request compression
-                client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.5");
-                client.DefaultRequestHeaders.Add("Cache-Control", "no-cache");
-                client.DefaultRequestHeaders.Add("Pragma", "no-cache");
-                
-                var response = await client.GetAsync(scraperUrl);
-                Console.WriteLine($"[DEBUG] ScraperAPI Response: {response.StatusCode}");
-                Console.WriteLine($"[DEBUG] Response Content-Type: {response.Content.Headers.ContentType}");
-                Console.WriteLine($"[DEBUG] Response Content-Encoding: {response.Content.Headers.ContentEncoding}");
-                
-                if (response.IsSuccessStatusCode)
+                // Try configurations in order, but don't wait too long for each
+                foreach (var scraperUrl in configurations)
                 {
-                    // Read content properly handling encoding
-                    var content = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[DEBUG] ScraperAPI content length: {content?.Length}");
-                    
-                    // Debug: Show first 500 characters of content to understand the structure
-                    if (!string.IsNullOrEmpty(content))
+                    try
                     {
-                        var preview = content.Length > 500 ? content.Substring(0, 500) : content;
-                        Console.WriteLine($"[DEBUG] ScraperAPI content preview: {preview}");
+                        Console.WriteLine($"[PERF] Trying ScraperAPI config #{Array.IndexOf(configurations, scraperUrl) + 1}");
                         
-                        // Check if content appears to be binary/compressed
-                        var binaryCharCount = content.Take(100).Count(c => c < 32 && c != '\r' && c != '\n' && c != '\t');
-                        if (binaryCharCount > 10)
+                        using var client = new HttpClient();
+                        client.Timeout = TimeSpan.FromSeconds(5); // Reduced from 8s to 5s for faster fail
+                        
+                        // Minimal headers for speed
+                        client.DefaultRequestHeaders.Add("Accept", "text/html");
+                        
+                        var response = await client.GetAsync(scraperUrl, cts.Token).ConfigureAwait(false);
+                        
+                        Console.WriteLine($"[DEBUG] ScraperAPI response: {response.StatusCode} | Headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join(";", h.Value)}"))}");
+                        
+                        if (response.IsSuccessStatusCode)
                         {
-                            Console.WriteLine($"[DEBUG] Content appears to be binary/compressed (binary chars: {binaryCharCount}/100)");
+                            var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            Console.WriteLine($"[DEBUG] ScraperAPI content length: {content?.Length ?? 0}");
                             
-                            // Try reading as bytes and check for common compression signatures
-                            var bytes = await response.Content.ReadAsByteArrayAsync();
-                            Console.WriteLine($"[DEBUG] Raw content length: {bytes.Length} bytes");
-                            Console.WriteLine($"[DEBUG] First 20 bytes: {string.Join(" ", bytes.Take(20).Select(b => b.ToString("X2")))}");
-                            
-                            // ScraperAPI should return uncompressed HTML, if we're getting binary data, it might be an error
-                            Console.WriteLine("[DEBUG] ScraperAPI returned binary/compressed content instead of HTML");
-                            throw new Exception("ScraperAPI returned binary/compressed content instead of HTML");
+                            // Quick validation
+                            if (!string.IsNullOrEmpty(content) && content.Contains("<", StringComparison.OrdinalIgnoreCase))
+                            {
+                                Console.WriteLine($"[PERF] ScraperAPI succeeded with config #{Array.IndexOf(configurations, scraperUrl) + 1} in {stopwatch.ElapsedMilliseconds}ms");
+                                return content;
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[DEBUG] ScraperAPI returned non-HTML content: {content?.Substring(0, Math.Min(200, content?.Length ?? 0))}");
+                            }
                         }
+                        
+                        Console.WriteLine($"[PERF] Config #{Array.IndexOf(configurations, scraperUrl) + 1} failed: {response.StatusCode}");
                     }
-                    
-                    // More flexible HTML validation - check for any HTML-like content
-                    if (!string.IsNullOrEmpty(content) && 
-                        (content.Contains("<html", StringComparison.OrdinalIgnoreCase) || 
-                         content.Contains("<!doctype", StringComparison.OrdinalIgnoreCase) ||
-                         content.Contains("<title", StringComparison.OrdinalIgnoreCase) ||
-                         content.Contains("<head", StringComparison.OrdinalIgnoreCase) ||
-                         content.Contains("<body", StringComparison.OrdinalIgnoreCase) ||
-                         content.Contains("<div", StringComparison.OrdinalIgnoreCase) ||
-                         content.Contains("<meta", StringComparison.OrdinalIgnoreCase)))
+                    catch (OperationCanceledException)
                     {
-                        Console.WriteLine("[DEBUG] ScraperAPI succeeded!");
-                        return content;
+                        Console.WriteLine($"[PERF] ScraperAPI config #{Array.IndexOf(configurations, scraperUrl) + 1} timed out");
+                        break; // Don't try more configs if we're timing out
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        Console.WriteLine("[DEBUG] ScraperAPI returned invalid HTML content");
-                        Console.WriteLine($"[DEBUG] Content does not contain standard HTML tags");
+                        Console.WriteLine($"[PERF] ScraperAPI config #{Array.IndexOf(configurations, scraperUrl) + 1} error: {ex.Message}");
                     }
                 }
                 
-                throw new Exception($"ScraperAPI returned: {response.StatusCode} - {response.ReasonPhrase}");
+                throw new Exception($"ScraperAPI không thể truy cập trang web sau {stopwatch.ElapsedMilliseconds}ms - sử dụng thông tin cơ bản");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[DEBUG] ScraperAPI failed: {ex.Message}");
+                Console.WriteLine($"[PERF] ScraperAPI hoàn toàn thất bại sau {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
                 throw;
             }
         }
 
         /// <summary>
-        /// Retrieves the HTML content of a given URL.
-        /// Strategy: Always try direct access first to save ScraperAPI tokens, only fallback when blocked.
+        /// Retrieves the HTML content of a given URL with optimized parallel strategies.
+        /// Strategy: Try direct access and alternative strategies in parallel for speed.
         /// </summary>
         /// <param name="url">The URL to fetch content from.</param>
         /// <returns>The HTML content as a string.</returns>
         /// <exception cref="Exception">Thrown if fetching the page content fails.</exception>
         private async Task<string> GetPageContentAsync(string url)
         {
+            var stopwatch = Stopwatch.StartNew();
             Exception? lastException = null;
             
-            // STEP 1: Always try direct access first to save ScraperAPI tokens
-            // Try different User-Agent strings to bypass restrictions
-            var userAgents = new[]
-            {
-                // Latest Chrome on Windows
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-                // Latest Firefox on Windows  
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
-                // Latest Edge on Windows
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
-                // Latest Safari on Mac
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
-            };
-
-            // Different approaches for each attempt
-            for (int attempt = 0; attempt < userAgents.Length; attempt++)
-            {
-                try
-                {
-                    // Create a new HttpClient for each attempt to avoid connection pooling issues
-                    using var client = new HttpClient();
-                    
-                    // Set timeout
-                    client.Timeout = TimeSpan.FromSeconds(30);
-                    
-                    // Clear default headers
-                    client.DefaultRequestHeaders.Clear();
-                    
-                    // Set User-Agent
-                    client.DefaultRequestHeaders.Add("User-Agent", userAgents[attempt]);
-                    
-                    // Set comprehensive headers that match real browsers exactly
-                    if (attempt == 0) // Chrome-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi,en-US;q=0.9,en;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br, zstd");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua", "\"Chromium\";v=\"127\", \"Not;A=Brand\";v=\"99\"");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-mobile", "?0");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                        client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                        client.DefaultRequestHeaders.Add("cache-control", "max-age=0");
-                    }
-                    else if (attempt == 1) // Firefox-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi,en-US;q=0.7,en;q=0.3");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                        client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                    }
-                    else if (attempt == 2) // Edge-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi,en;q=0.9");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua", "\"Microsoft Edge\";v=\"127\", \"Chromium\";v=\"127\", \"Not;A=Brand\";v=\"99\"");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-mobile", "?0");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                        client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                    }
-                    else // Safari-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi-vn");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                        client.DefaultRequestHeaders.Add("cache-control", "max-age=0");
-                    }
-                    
-                    // Special handling for ResearchGate
-                    if (url.Contains("researchgate.net"))
-                    {
-                        if (attempt == 0)
-                        {
-                            client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
-                            client.DefaultRequestHeaders.Add("Origin", "https://www.google.com");
-                            // Add cookies to simulate real browsing session
-                            client.DefaultRequestHeaders.Add("Cookie", "RG_locale=en; RG_analyticsOptOut=false");
-                        }
-                        
-                        // Try ResearchGate mobile URL first (often less protected)
-                        if (attempt == 0 && !url.Contains("m.researchgate"))
-                        {
-                            var mobileUrl = url.Replace("www.researchgate.net", "m.researchgate.net");
-                            Console.WriteLine($"[DEBUG] Trying mobile ResearchGate URL: {mobileUrl}");
-                            
-                            try
-                            {
-                                var mobileResponse = await client.GetAsync(mobileUrl);
-                                if (mobileResponse.IsSuccessStatusCode)
-                                {
-                                    var mobileContent = await mobileResponse.Content.ReadAsStringAsync();
-                                    if (!string.IsNullOrEmpty(mobileContent) && mobileContent.Contains("<title"))
-                                    {
-                                        Console.WriteLine("[DEBUG] Mobile ResearchGate succeeded!");
-                                        return mobileContent;
-                                    }
-                                }
-                            }
-                            catch (Exception mobileEx)
-                            {
-                                Console.WriteLine($"[DEBUG] Mobile ResearchGate failed: {mobileEx.Message}");
-                            }
-                        }
-                    }
-                    // Special handling for academic sites
-                    else if (url.Contains("ieee.org") || url.Contains("acm.org") || url.Contains("springer.com"))
-                    {
-                        if (attempt == 0)
-                        {
-                            client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
-                            client.DefaultRequestHeaders.Add("Origin", "https://scholar.google.com");
-                        }
-                    }
-                    // Add a referrer to make it look more natural for other sites
-                    else if (attempt > 0)
-                    {
-                        client.DefaultRequestHeaders.Add("Referer", "https://www.google.com/");
-                    }
-
-                    Console.WriteLine($"[DEBUG] Attempt {attempt + 1} with {userAgents[attempt].Split(' ')[0]} browser simulation");
-
-                    var response = await client.GetAsync(url);
-                    
-                    Console.WriteLine($"[DEBUG] Response: {response.StatusCode} ({(int)response.StatusCode})");
-                    
-                    // Check if successful
-                    if (response.IsSuccessStatusCode)
-                    {
-                        // Read content as bytes first to handle compression properly
-                        var contentBytes = await response.Content.ReadAsByteArrayAsync();
-                        Console.WriteLine($"[DEBUG] Response content length: {contentBytes?.Length}");
-                        Console.WriteLine($"[DEBUG] Content encoding: {response.Content.Headers.ContentEncoding?.FirstOrDefault() ?? "none"}");
-                        
-                        string content;
-                        
-                        // Check content encoding and decompress if needed
-                        var encoding = response.Content.Headers.ContentEncoding?.FirstOrDefault()?.ToLowerInvariant();
-                        if (encoding == "gzip")
-                        {
-                            using var gzipStream = new System.IO.Compression.GZipStream(new MemoryStream(contentBytes), System.IO.Compression.CompressionMode.Decompress);
-                            using var reader = new StreamReader(gzipStream, System.Text.Encoding.UTF8);
-                            content = await reader.ReadToEndAsync();
-                            Console.WriteLine($"[DEBUG] Decompressed GZIP content length: {content?.Length}");
-                        }
-                        else if (encoding == "deflate")
-                        {
-                            using var deflateStream = new System.IO.Compression.DeflateStream(new MemoryStream(contentBytes), System.IO.Compression.CompressionMode.Decompress);
-                            using var reader = new StreamReader(deflateStream, System.Text.Encoding.UTF8);
-                            content = await reader.ReadToEndAsync();
-                            Console.WriteLine($"[DEBUG] Decompressed DEFLATE content length: {content?.Length}");
-                        }
-                        else if (encoding == "br")
-                        {
-                            using var brotliStream = new System.IO.Compression.BrotliStream(new MemoryStream(contentBytes), System.IO.Compression.CompressionMode.Decompress);
-                            using var reader = new StreamReader(brotliStream, System.Text.Encoding.UTF8);
-                            content = await reader.ReadToEndAsync();
-                            Console.WriteLine($"[DEBUG] Decompressed BROTLI content length: {content?.Length}");
-                        }
-                        else
-                        {
-                            // Try as regular string first
-                            content = await response.Content.ReadAsStringAsync();
-                            Console.WriteLine($"[DEBUG] Plain text content length: {content?.Length}");
-                        }
-                        
-                        Console.WriteLine($"[DEBUG] Final content starts with: {content?.Substring(0, Math.Min(200, content?.Length ?? 0))}");
-                        
-                        // Verify we got actual HTML content
-                        if (!string.IsNullOrEmpty(content) && 
-                            (content.Contains("<html", StringComparison.OrdinalIgnoreCase) || 
-                             content.Contains("<!doctype", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<head", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<body", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<title", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            Console.WriteLine($"[DEBUG] HTML validation passed for attempt {attempt + 1}");
-                            return content;
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[DEBUG] HTML validation failed for attempt {attempt + 1}. Content does not appear to be valid HTML");
-                        }
-                    }
-                    
-                    lastException = new Exception($"HTTP {(int)response.StatusCode} {response.StatusCode}: {response.ReasonPhrase}");
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                    Console.WriteLine($"[DEBUG] Attempt {attempt + 1} failed: {ex.Message}");
-                }
-
-                // Wait between attempts with longer delays
-                if (attempt < userAgents.Length - 1)
-                {
-                    await Task.Delay(2000 + (attempt * 1000)); // 2-5 second delays
-                }
-            }
-
-            // STEP 2: Only use ScraperAPI as fallback when direct access fails (to save tokens)
-            // This ensures we only pay for ScraperAPI when absolutely necessary
             try
             {
-                var scraperContent = await GetPageContentWithScraperAPI(url);
-                if (!string.IsNullOrEmpty(scraperContent))
+                Console.WriteLine($"[PERF] Starting content fetch for: {url}");
+                
+                // Performance optimization: Try multiple strategies in parallel with fast timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12)); // Reduced overall timeout
+                
+                // Create multiple fetch strategies to run in parallel
+                var tasks = new List<Task<string>>();
+                
+                // Strategy 1: Direct access with minimal headers (fastest)
+                tasks.Add(TryDirectAccess(url, cts.Token));
+                
+                // Strategy 2: Alternative URL patterns (for academic sites)
+                if (IsAcademicSite(url))
                 {
-                    return scraperContent;
+                    tasks.Add(TryAlternativeAcademicUrls(url, cts.Token));
                 }
-            }
-            catch (Exception scraperEx)
-            {
-                Console.WriteLine($"[DEBUG] ScraperAPI also failed: {scraperEx.Message}");
-            }
-
-            // If ScraperAPI failed, try alternative URL strategies
-            Console.WriteLine("[DEBUG] Trying alternative URL strategies...");
-            var altContent = await TryAlternativeUrlStrategies(url);
-            if (!string.IsNullOrEmpty(altContent))
-            {
-                return altContent;
-            }
-            
-            // If all attempts failed, try one more time with minimal headers
-            try
-            {
-                Console.WriteLine("[DEBUG] Trying fallback method with minimal headers...");
-                using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(30);
-                client.DefaultRequestHeaders.Clear();
                 
-                // Only essential headers to avoid detection
-                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-                client.DefaultRequestHeaders.Add("Accept", "*/*");
-                client.DefaultRequestHeaders.Add("Accept-Language", "vi");
+                // Strategy 3: Browser simulation (fallback)
+                tasks.Add(TryBrowserSimulation(url, cts.Token));
                 
-                var response = await client.GetAsync(url);
-                
-                if (response.IsSuccessStatusCode)
+                // Wait for first successful result
+                while (tasks.Count > 0)
                 {
-                    var content = await response.Content.ReadAsStringAsync();
-                    if (!string.IsNullOrEmpty(content) && content.Contains("<title", StringComparison.OrdinalIgnoreCase))
+                    var completedTask = await Task.WhenAny(tasks).ConfigureAwait(false);
+                    tasks.Remove(completedTask);
+                    
+                    try
                     {
-                        Console.WriteLine("[DEBUG] Fallback method succeeded!");
-                        return content;
+                        var result = await completedTask.ConfigureAwait(false);
+                        if (!string.IsNullOrEmpty(result))
+                        {
+                            Console.WriteLine($"[PERF] Content fetch succeeded in {stopwatch.ElapsedMilliseconds}ms");
+                            return result;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        lastException = ex;
+                        Console.WriteLine($"[PERF] Strategy failed: {ex.Message}");
                     }
                 }
+                
+                // If all direct methods fail, try ScraperAPI as last resort
+                Console.WriteLine($"[PERF] Các phương thức trực tiếp thất bại sau {stopwatch.ElapsedMilliseconds}ms, thử ScraperAPI");
+                return await GetPageContentWithScraperAPI(url).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[DEBUG] Fallback method also failed: {ex.Message}");
+                Console.WriteLine($"[PERF] All methods failed after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
+                throw new Exception($"Failed to fetch content for {url} after {stopwatch.ElapsedMilliseconds}ms", lastException ?? ex);
             }
-
-            // If all attempts failed, throw the last exception
-            throw new Exception($"Failed to fetch page content after {userAgents.Length} attempts. Last error: {lastException?.Message}");
         }
-
+        
+        /// <summary>
+        /// Fast direct access attempt with minimal headers
+        /// </summary>
+        private async Task<string> TryDirectAccess(string url, CancellationToken cancellationToken)
+        {
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(6); // Short timeout for speed
+            
+            // Minimal headers for fastest response
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            client.DefaultRequestHeaders.Add("Accept", "text/html");
+            
+            var response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(content) && content.Contains("<"))
+                {
+                    Console.WriteLine("[PERF] Direct access succeeded");
+                    return content;
+                }
+            }
+            
+            throw new Exception($"Direct access failed: {response.StatusCode}");
+        }
+        
+        /// <summary>
+        /// Try alternative URLs for academic sites
+        /// </summary>
+        private async Task<string> TryAlternativeAcademicUrls(string url, CancellationToken cancellationToken)
+        {
+            var alternatives = new List<string>();
+            
+            // ResearchGate alternatives
+            if (url.Contains("researchgate.net"))
+            {
+                alternatives.Add(url.Replace("www.researchgate.net", "m.researchgate.net"));
+                alternatives.Add(url.Replace("publication/", "profile/"));
+            }
+            
+            // arXiv alternatives
+            if (url.Contains("arxiv.org"))
+            {
+                if (url.Contains("/abs/"))
+                {
+                    alternatives.Add(url.Replace("/abs/", "/pdf/") + ".pdf");
+                }
+            }
+            
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(5);
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            
+            foreach (var altUrl in alternatives)
+            {
+                try
+                {
+                    var response = await client.GetAsync(altUrl, cancellationToken).ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        if (!string.IsNullOrEmpty(content) && content.Contains("<"))
+                        {
+                            Console.WriteLine($"[PERF] Alternative URL succeeded: {altUrl}");
+                            return content;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PERF] Alternative {altUrl} failed: {ex.Message}");
+                }
+            }
+            
+            throw new Exception("No alternative URLs succeeded");
+        }
+        
+        /// <summary>
+        /// Browser simulation with realistic headers
+        /// </summary>
+        private async Task<string> TryBrowserSimulation(string url, CancellationToken cancellationToken)
+        {
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(8);
+            
+            // Realistic browser headers
+            client.DefaultRequestHeaders.Add("User-Agent", 
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36");
+            client.DefaultRequestHeaders.Add("Accept", 
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+            client.DefaultRequestHeaders.Add("Accept-Language", "vi,en-US;q=0.9,en;q=0.8");
+            client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
+            client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
+            client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
+            client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
+            client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
+            
+            // Special handling for ResearchGate
+            if (url.Contains("researchgate.net"))
+            {
+                client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
+            }
+            
+            var response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(content) && content.Contains("<"))
+                {
+                    Console.WriteLine("[PERF] Browser simulation succeeded");
+                    return content;
+                }
+            }
+            
+            throw new Exception($"Browser simulation failed: {response.StatusCode}");
+        }
+        
+        /// <summary>
+        /// Check if URL is from an academic site
+        /// </summary>
+        private bool IsAcademicSite(string url)
+        {
+            return url.Contains("researchgate.net") || 
+                   url.Contains("arxiv.org") || 
+                   url.Contains("ieee.org") || 
+                   url.Contains("springer.com") || 
+                   url.Contains("pubmed") || 
+                   url.Contains("scholar.google");
+        }
+            
+            // STEP 1: Always try direct access first to save ScraperAPI tokens
+        
         #region Website Detection Methods
         
         /// <summary>
