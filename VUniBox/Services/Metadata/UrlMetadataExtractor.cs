@@ -141,14 +141,17 @@ namespace VUniBox.Services.Metadata
     public class UrlMetadataExtractor : IUrlMetadataExtractor
     {
         private readonly HttpClient _httpClient;
+        private readonly IConfiguration _configuration;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="UrlMetadataExtractor"/> class.
         /// </summary>
         /// <param name="httpClient">The HTTP client to use for web requests.</param>
-        public UrlMetadataExtractor(HttpClient httpClient)
+        /// <param name="configuration">The configuration to get ScraperAPI settings.</param>
+        public UrlMetadataExtractor(HttpClient httpClient, IConfiguration configuration)
         {
             _httpClient = httpClient;
+            _configuration = configuration;
             
             // Configure HttpClient for automatic decompression if not already configured
             if (!_httpClient.DefaultRequestHeaders.Contains("Accept-Encoding"))
@@ -206,46 +209,64 @@ namespace VUniBox.Services.Metadata
                 // Clean and validate URL first
                 url = CleanAndValidateUrl(url);
                 
-                var metadata = await ExtractGenericMetadataAsync(url);
-                
-                try
+                // Use specialized extractors for known academic sites directly to avoid duplicate processing
+                if (IsResearchGateUrl(url))
+                {
+                    var html = await GetPageContentAsync(url);
+                    return ExtractResearchGateMetadata(html, url);
+                }
+                else if (IsArxivUrl(url))
                 {
                     var html = await GetPageContentAsync(url);
                     var doc = new HtmlDocument();
                     doc.LoadHtml(html);
-
-                    // Extract DOI
-                    var doiMatch = Regex.Match(html, @"10\.\d{4,}/[^\s<>""']+", RegexOptions.IgnoreCase);
-                    if (doiMatch.Success)
-                    {
-                        metadata.DOI = doiMatch.Value;
-                    }
-
-                    // Extract journal information
-                    var journalSelectors = new[]
-                    {
-                        "meta[name='citation_journal_title']",
-                        "meta[property='og:site_name']",
-                        ".journal-title",
-                        ".publication-title"
-                    };
-
-                    foreach (var selector in journalSelectors)
-                    {
-                        var journalElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
-                        if (journalElement != null)
-                        {
-                            metadata.Journal = GetAttributeValue(journalElement, "content") ?? journalElement.InnerText?.Trim();
-                            break;
-                        }
-                    }
+                    return ExtractArxivMetadata(doc, url);
                 }
-                catch (Exception ex)
+                else if (IsPubMedUrl(url))
                 {
-                    metadata.Description = $"Lỗi trích xuất metadata nghiên cứu: {ex.Message}";
+                    var html = await GetPageContentAsync(url);
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    return ExtractPubMedMetadata(doc, url);
                 }
-
-                return metadata;
+                else if (IsIEEEUrl(url))
+                {
+                    var html = await GetPageContentAsync(url);
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    return ExtractIEEEMetadata(doc, url);
+                }
+                else if (IsSpringerUrl(url))
+                {
+                    var html = await GetPageContentAsync(url);
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    return ExtractSpringerMetadata(doc, url);
+                }
+                else if (IsGoogleScholarUrl(url))
+                {
+                    var html = await GetPageContentAsync(url);
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    return ExtractGoogleScholarMetadata(doc, url);
+                }
+                else if (IsJSTORUrl(url))
+                {
+                    var html = await GetPageContentAsync(url);
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    return ExtractJSTORMetadata(doc, url);
+                }
+                else if (IsScienceDirectUrl(url))
+                {
+                    var html = await GetPageContentAsync(url);
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    return ExtractScienceDirectMetadata(doc, url);
+                }
+                
+                // Fall back to generic extraction for non-specialized research sites
+                return await ExtractGenericMetadataAsync(url);
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("403") || ex.Message.Contains("Forbidden"))
             {
@@ -256,6 +277,325 @@ namespace VUniBox.Services.Metadata
             {
                 Console.WriteLine($"[ERROR] Failed to extract from research site {url}: {ex.Message}");
                 return CreateFallbackMetadata(url, DocumentType.Research, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Extracts detailed metadata specifically from ResearchGate publications.
+        /// </summary>
+        /// <param name="html">The HTML content from ResearchGate.</param>
+        /// <param name="url">The original URL.</param>
+        /// <returns>Enhanced metadata with ResearchGate-specific information.</returns>
+        private DocumentMetadataDto ExtractResearchGateMetadata(string html, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "ResearchGate" };
+            var doc = new HtmlDocument();
+            doc.LoadHtml(html);
+
+            try
+            {
+                Console.WriteLine("[DEBUG] Starting ResearchGate-specific metadata extraction");
+                Console.WriteLine($"[DEBUG] HTML content length: {html?.Length ?? 0}");
+                
+                // Debug: Print first 2000 characters of HTML to see structure
+                var htmlPreview = html?.Length > 2000 
+                    ? html.Substring(0, 2000) 
+                    : html ?? "";
+                Console.WriteLine($"[DEBUG] HTML Preview (first 2000 chars):\n{htmlPreview}");
+                Console.WriteLine("[DEBUG] ===== END HTML PREVIEW =====");
+                
+                // Debug: Check for citation meta tags
+                var allMetaTags = doc.DocumentNode.SelectNodes("//meta[@name[starts-with(., 'citation_')]]");
+                Console.WriteLine($"[DEBUG] Found {allMetaTags?.Count ?? 0} citation meta tags in HTML");
+                if (allMetaTags != null)
+                {
+                    foreach (var meta in allMetaTags.Take(5)) // Show first 5 to avoid spam
+                    {
+                        var name = GetAttributeValue(meta, "name");
+                        var content = GetAttributeValue(meta, "content");
+                        Console.WriteLine($"[DEBUG] Meta: {name} = '{content?.Substring(0, Math.Min(100, content?.Length ?? 0))}...'");
+                    }
+                }
+                
+                // Debug: Check ALL meta tags to see what we have
+                var allMetas = doc.DocumentNode.SelectNodes("//meta");
+                Console.WriteLine($"[DEBUG] Total meta tags found: {allMetas?.Count ?? 0}");
+                if (allMetas != null && allMetas.Count > 0)
+                {
+                    Console.WriteLine("[DEBUG] First 15 meta tags:");
+                    for (int i = 0; i < Math.Min(15, allMetas.Count); i++)
+                    {
+                        var meta = allMetas[i];
+                        var name = meta.GetAttributeValue("name", "");
+                        var property = meta.GetAttributeValue("property", "");
+                        var content = meta.GetAttributeValue("content", "");
+                        Console.WriteLine($"[DEBUG] Meta {i}: name='{name}' property='{property}' content='{content?.Substring(0, Math.Min(150, content?.Length ?? 0))}...'");
+                    }
+                    
+                    // Look specifically for OpenGraph and Twitter meta tags
+                    Console.WriteLine("[DEBUG] Looking for OpenGraph and Twitter meta tags:");
+                    var ogMetas = doc.DocumentNode.SelectNodes("//meta[@property[starts-with(., 'og:')]]");
+                    if (ogMetas != null)
+                    {
+                        foreach (var meta in ogMetas)
+                        {
+                            var property = meta.GetAttributeValue("property", "");
+                            var content = meta.GetAttributeValue("content", "");
+                            Console.WriteLine($"[DEBUG] OG: {property} = '{content}'");
+                        }
+                    }
+                    
+                    var twitterMetas = doc.DocumentNode.SelectNodes("//meta[@property[starts-with(., 'twitter:')]]");
+                    if (twitterMetas != null)
+                    {
+                        foreach (var meta in twitterMetas)
+                        {
+                            var property = meta.GetAttributeValue("property", "");
+                            var content = meta.GetAttributeValue("content", "");
+                            Console.WriteLine($"[DEBUG] Twitter: {property} = '{content}'");
+                        }
+                    }
+                }
+
+                // Extract title - prioritize OpenGraph which seems to be available
+                var titleMeta = doc.DocumentNode.SelectSingleNode("//meta[@property='og:title']") ??
+                               doc.DocumentNode.SelectSingleNode("//meta[@name='citation_title']");
+                if (titleMeta != null)
+                {
+                    metadata.Title = GetAttributeValue(titleMeta, "content");
+                    Console.WriteLine($"[DEBUG] ResearchGate title extracted via {(titleMeta.GetAttributeValue("property", "") == "og:title" ? "OpenGraph" : "citation meta")}: {metadata.Title}");
+                }
+
+                // If no title from meta tags, try selectors
+                if (string.IsNullOrEmpty(metadata.Title))
+                {
+                    var titleSelectors = new[]
+                    {
+                        "//h1[@class='research-detail-header-section__title']",
+                        "//h1[@class='publication-detail-header__title']", 
+                        "//h1[contains(@class, 'publication-title')]",
+                        "//h1",
+                        "//title"
+                    };
+
+                    foreach (var selector in titleSelectors)
+                    {
+                        var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                        if (titleElement != null)
+                        {
+                            var title = titleElement.InnerText?.Trim();
+                            
+                            if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                            {
+                                metadata.Title = title;
+                                Console.WriteLine($"[DEBUG] ResearchGate title extracted via {selector}: {title}");
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Extract authors via citation meta tags first
+                var authorMetas = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+                Console.WriteLine($"[DEBUG] Found {authorMetas?.Count ?? 0} citation_author meta tags");
+                if (authorMetas != null && authorMetas.Any())
+                {
+                    var authors = authorMetas.Select(meta => GetAttributeValue(meta, "content"))
+                                           .Where(author => !string.IsNullOrEmpty(author))
+                                           .ToList();
+                    if (authors.Any())
+                    {
+                        metadata.Authors = string.Join(", ", authors);
+                        metadata.Author = authors.First();
+                        Console.WriteLine($"[DEBUG] ResearchGate authors via citation meta: {metadata.Authors}");
+                    }
+                }
+
+                // If no citation authors, try ResearchGate specific selectors
+                if (string.IsNullOrEmpty(metadata.Authors))
+                {
+                    Console.WriteLine("[DEBUG] No citation authors found, trying ResearchGate DOM selectors");
+                    var authorSelectors = new[]
+                    {
+                        // Modern ResearchGate author selectors (2024+)
+                        "//div[contains(@class, 'authors')]//a[contains(@class, 'author')]",
+                        "//div[@class='authors']//a",
+                        "//span[contains(@class, 'author-name')]",
+                        "//a[contains(@class, 'author-name')]",
+                        "//div[contains(@class, 'nova-legacy-v-person-list__item')]//span[@class='nova-legacy-v-person-item__title']",
+                        "//div[contains(@class, 'publication-header-authors')]//a[contains(@class, 'nova-legacy-v-person-item__title')]",
+                        // Fallback to any links that might be authors
+                        "//a[contains(@href, '/profile/')]"
+                    };
+
+                    var authors = new List<string>();
+                    foreach (var selector in authorSelectors)
+                    {
+                        var authorElements = doc.DocumentNode.SelectNodes(selector);
+                        Console.WriteLine($"[DEBUG] Selector '{selector}' found {authorElements?.Count ?? 0} elements");
+                        if (authorElements != null)
+                        {
+                            foreach (var element in authorElements)
+                            {
+                                var author = element.InnerText?.Trim();
+                                if (!string.IsNullOrEmpty(author) && author.Length > 2 && author.Length < 100)
+                                {
+                                    // Basic filtering to avoid junk
+                                    if (!author.Contains("@") && !author.Contains("http") && 
+                                        !author.ToLower().Contains("researchgate") &&
+                                        !authors.Contains(author, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        authors.Add(author);
+                                        Console.WriteLine($"[DEBUG] Found author: '{author}'");
+                                    }
+                                }
+                            }
+                            if (authors.Any()) break; // Stop after first successful selector
+                        }
+                    }
+
+                    if (authors.Any())
+                    {
+                        metadata.Authors = string.Join(", ", authors);
+                        metadata.Author = authors.First();
+                        Console.WriteLine($"[DEBUG] ResearchGate authors via DOM: {metadata.Authors}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("[DEBUG] No authors found via DOM selectors either");
+                    }
+                }
+
+                // Extract abstract - try multiple approaches prioritizing OpenGraph
+                Console.WriteLine("[DEBUG] Extracting abstract...");
+                var abstractSelectors = new[]
+                {
+                    // Start with OpenGraph description which is often available
+                    "//meta[@property='og:description']",
+                    "//meta[@property='twitter:description']",
+                    "//meta[@name='description']",
+                    // Then try citation abstract
+                    "//meta[@name='citation_abstract']",
+                    // Then try DOM selectors for abstract content
+                    "//div[contains(@class, 'research-detail-middle-section__abstract')]//div[contains(@class, 'nova-legacy-e-text')]",
+                    "//div[contains(@class, 'publication-abstract')]//div[contains(@class, 'nova-legacy-e-text')]",
+                    "//div[@class='abstract-content']",
+                    "//div[contains(@class, 'abstract')]",
+                    "//section[contains(@class, 'abstract')]//p"
+                };
+
+                foreach (var selector in abstractSelectors)
+                {
+                    var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                    Console.WriteLine($"[DEBUG] Abstract selector '{selector}' found: {abstractElement != null}");
+                    if (abstractElement != null)
+                    {
+                        var abstractText = abstractElement.Name == "meta" 
+                            ? GetAttributeValue(abstractElement, "content")
+                            : abstractElement.InnerText?.Trim();
+                        
+                        if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 30)
+                        {
+                            // Clean up common ResearchGate suffixes
+                            abstractText = abstractText.Replace(" | Find, read and cite all the research you need on ResearchGate", "");
+                            abstractText = abstractText.Replace("Find, read and cite all the research you need on ResearchGate", "");
+                            
+                            metadata.Abstract = abstractText;
+                            metadata.Description = abstractText;
+                            Console.WriteLine($"[DEBUG] ResearchGate abstract found via {selector}: {abstractText.Substring(0, Math.Min(150, abstractText.Length))}...");
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[DEBUG] Abstract found but too short: '{abstractText}' (length: {abstractText?.Length ?? 0})");
+                        }
+                    }
+                }
+
+                // Extract DOI
+                Console.WriteLine("[DEBUG] Extracting DOI...");
+                var doiMeta = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+                Console.WriteLine($"[DEBUG] DOI meta tag found: {doiMeta != null}");
+                if (doiMeta != null)
+                {
+                    metadata.DOI = GetAttributeValue(doiMeta, "content");
+                    Console.WriteLine($"[DEBUG] ResearchGate DOI via meta: {metadata.DOI}");
+                }
+
+                // Extract journal/conference
+                Console.WriteLine("[DEBUG] Extracting journal/conference...");
+                var journalMeta = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_journal_title']") ??
+                                 doc.DocumentNode.SelectSingleNode("//meta[@name='citation_conference_title']");
+                Console.WriteLine($"[DEBUG] Journal meta tag found: {journalMeta != null}");
+                if (journalMeta != null)
+                {
+                    metadata.Journal = GetAttributeValue(journalMeta, "content");
+                    Console.WriteLine($"[DEBUG] ResearchGate journal via meta: {metadata.Journal}");
+                }
+
+                // Extract publication date
+                Console.WriteLine("[DEBUG] Extracting publication date...");
+                var dateMeta = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_publication_date']");
+                Console.WriteLine($"[DEBUG] Date meta tag found: {dateMeta != null}");
+                if (dateMeta != null)
+                {
+                    var dateStr = GetAttributeValue(dateMeta, "content");
+                    Console.WriteLine($"[DEBUG] Date string: '{dateStr}'");
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] ResearchGate date: {dateStr}");
+                    }
+                }
+
+                metadata.Language = "en"; // Most ResearchGate papers are in English
+                metadata.RetrievedDate = DateTime.UtcNow;
+                
+                // Final cleanup and validation
+                if (string.IsNullOrEmpty(metadata.Authors))
+                {
+                    Console.WriteLine("[DEBUG] No authors found, marking as unknown...");
+                    metadata.Authors = "Authors not available";
+                    metadata.Author = "Unknown";
+                }
+                
+                // Clean up title if it contains PDF prefix
+                if (!string.IsNullOrEmpty(metadata.Title))
+                {
+                    metadata.Title = metadata.Title.Replace("(PDF) ", "").Trim();
+                }
+                
+                // If we have at least a title, this is a success
+                if (!string.IsNullOrEmpty(metadata.Title))
+                {
+                    Console.WriteLine("[DEBUG] ResearchGate metadata extraction completed successfully");
+                    return metadata;
+                }
+                else
+                {
+                    Console.WriteLine("[DEBUG] ResearchGate metadata extraction failed - no title found");
+                    // Try to extract title from URL as fallback
+                    var titleFromUrl = ExtractTitleFromUrl(url, "researchgate.net");
+                    if (!string.IsNullOrEmpty(titleFromUrl))
+                    {
+                        metadata.Title = titleFromUrl;
+                        metadata.Description = "Metadata được trích xuất một phần từ URL do hạn chế truy cập.";
+                    }
+                    else
+                    {
+                        metadata.Title = "Tài liệu từ ResearchGate";
+                        metadata.Description = "Không thể trích xuất metadata từ ResearchGate. Vui lòng truy cập URL gốc.";
+                    }
+                }
+                
+                return metadata;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] ResearchGate metadata extraction failed: {ex.Message}");
+                metadata.Title = ExtractTitleFromUrl(url, "researchgate.net") ?? "Tài liệu từ ResearchGate";
+                metadata.Description = $"Lỗi trích xuất ResearchGate metadata: {ex.Message}";
+                return metadata;
             }
         }
 
@@ -610,154 +950,35 @@ namespace VUniBox.Services.Metadata
         /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted generic metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractGenericMetadataAsync(string url)
         {
-            Console.WriteLine($"[DEBUG] ExtractGenericMetadataAsync started for: {url}");
             var metadata = new DocumentMetadataDto { URL = url };
 
             try
             {
+                Console.WriteLine($"[DEBUG] ExtractGenericMetadataAsync called for: {url}");
                 var html = await GetPageContentAsync(url);
-                Console.WriteLine($"[DEBUG] GetPageContentAsync in ExtractGenericMetadataAsync completed. HTML length: {html?.Length}");
                 
                 if (string.IsNullOrEmpty(html))
                 {
-                    Console.WriteLine($"[ERROR] HTML content is null or empty");
                     metadata.Title = "Lỗi: Không thể truy cập nội dung";
                     metadata.Description = "Không thể truy xuất nội dung HTML từ URL";
                     return metadata;
                 }
                 
-                // Show first 500 characters of HTML for debugging
-                var htmlPreview = html.Length > 500 ? html.Substring(0, 500) + "..." : html;
-                Console.WriteLine($"[DEBUG] HTML Preview: {htmlPreview}");
-                
+                Console.WriteLine($"[DEBUG] HTML retrieved for generic extraction, length: {html.Length}");
                 var doc = new HtmlDocument();
                 doc.LoadHtml(html);
-                Console.WriteLine($"[DEBUG] HTML document loaded in ExtractGenericMetadataAsync");
 
-                // Extract title
-                var titleSelectors = new[]
-                {
-                    "meta[property='og:title']",
-                    "meta[name='twitter:title']",
-                    "title",
-                    "h1"
-                };
-
-                foreach (var selector in titleSelectors)
-                {
-                    Console.WriteLine($"[DEBUG] Trying title selector: {selector}");
-                    var titleElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
-                    Console.WriteLine($"[DEBUG] Title element found: {titleElement != null}");
-                    
-                    if (titleElement != null)
-                    {
-                        var contentAttr = GetAttributeValue(titleElement, "content");
-                        var innerText = titleElement.InnerText?.Trim();
-                        Console.WriteLine($"[DEBUG] Content attribute: '{contentAttr}', InnerText: '{innerText}'");
-                        
-                        var title = contentAttr ?? innerText;
-                        Console.WriteLine($"[DEBUG] Final title candidate: '{title}', Length: {title?.Length}");
-                        
-                        if (!string.IsNullOrEmpty(title) && title.Length > 5)
-                        {
-                            metadata.Title = title;
-                            Console.WriteLine($"[DEBUG] Title extracted successfully: {title}");
-                            break;
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[DEBUG] Title candidate rejected: empty or too short");
-                        }
-                    }
-                }
-                
-                if (string.IsNullOrEmpty(metadata.Title))
-                {
-                    Console.WriteLine($"[DEBUG] No title found, setting default");
-                }
-
-                // Extract description
-                var descriptionSelectors = new[]
-                {
-                    "meta[property='og:description']",
-                    "meta[name='description']",
-                    "meta[name='twitter:description']"
-                };
-
-                foreach (var selector in descriptionSelectors)
-                {
-                    var descElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
-                    if (descElement != null)
-                    {
-                        var description = GetAttributeValue(descElement, "content");
-                        if (!string.IsNullOrEmpty(description))
-                        {
-                            metadata.Description = description;
-                            metadata.Abstract = description;
-                            break;
-                        }
-                    }
-                }
-
-                // Extract site name/source
-                var siteElement = doc.DocumentNode.SelectSingleNode("//meta[@property='og:site_name']");
-                if (siteElement != null)
-                {
-                    metadata.Source = GetAttributeValue(siteElement, "content");
-                    if (string.IsNullOrEmpty(metadata.Publisher))
-                    {
-                        metadata.Publisher = metadata.Source;
-                    }
-                }
-
-                // Extract author
-                var authorElement = doc.DocumentNode.SelectSingleNode("//meta[@name='author']");
-                if (authorElement != null)
-                {
-                    var author = GetAttributeValue(authorElement, "content");
-                    if (!string.IsNullOrEmpty(author))
-                    {
-                        metadata.Author = author;
-                        metadata.Authors = author;
-                    }
-                }
-
-                // Extract keywords
-                var keywordsElement = doc.DocumentNode.SelectSingleNode("//meta[@name='keywords']");
-                if (keywordsElement != null)
-                {
-                    metadata.Keywords = GetAttributeValue(keywordsElement, "content");
-                }
-
-                // Extract language
-                var langElement = doc.DocumentNode.SelectSingleNode("//html[@lang]");
-                metadata.Language = langElement != null ? GetAttributeValue(langElement, "lang") ?? "vi" : "vi";
-
-                // Set retrieved date
-                metadata.RetrievedDate = DateTime.UtcNow;
-
-                // Fallback for title
-                if (string.IsNullOrEmpty(metadata.Title))
-                {
-                    var uri = new Uri(url);
-                    metadata.Title = $"Tài liệu từ {uri.Host}";
-                }
+                // Extract standard web metadata for non-specialized sites
+                return ExtractStandardWebMetadata(doc, url);
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("403") || ex.Message.Contains("Forbidden"))
             {
-                Console.WriteLine($"[WARNING] Access denied (403) for {url}, creating fallback metadata");
                 return CreateFallbackMetadata(url, DocumentType.Others, ex.Message);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ERROR] Exception in ExtractGenericMetadataAsync: {ex.Message}");
-                Console.WriteLine($"[ERROR] Stack trace: {ex.StackTrace}");
-                
-                // Return fallback metadata instead of error metadata
                 return CreateFallbackMetadata(url, DocumentType.Others, ex.Message);
             }
-
-            return metadata;
         }
 
         /// <summary>
@@ -1076,7 +1297,109 @@ namespace VUniBox.Services.Metadata
         }
 
         /// <summary>
+        /// Retrieves HTML content using ScraperAPI when direct access fails.
+        /// </summary>
+        /// <param name="url">The URL to fetch content from.</param>
+        /// <returns>The HTML content as a string.</returns>
+        private async Task<string> GetPageContentWithScraperAPI(string url)
+        {
+            try
+            {
+                var apiKey = _configuration["ScraperAPI:ApiKey"];
+                var baseUrl = _configuration["ScraperAPI:BaseUrl"];
+                
+                if (string.IsNullOrEmpty(apiKey))
+                {
+                    throw new Exception("ScraperAPI key not configured");
+                }
+
+                var encodedUrl = Uri.EscapeDataString(url);
+                
+                // Enhanced ScraperAPI parameters for academic sites - simplified parameters
+                var scraperUrl = $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&country_code=us&session_number=1&autoparse=true";
+                
+                Console.WriteLine($"[DEBUG] Using ScraperAPI: {scraperUrl.Replace(apiKey, "***API_KEY***")}");
+                
+                using var handler = new HttpClientHandler()
+                {
+                    AutomaticDecompression = System.Net.DecompressionMethods.None // Disable automatic decompression
+                };
+                
+                using var client = new HttpClient(handler);
+                client.Timeout = TimeSpan.FromMinutes(3); // ScraperAPI needs more time
+                
+                // Add headers to mimic real browser behavior - but don't request compression
+                client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+                client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.5");
+                client.DefaultRequestHeaders.Add("Cache-Control", "no-cache");
+                client.DefaultRequestHeaders.Add("Pragma", "no-cache");
+                
+                var response = await client.GetAsync(scraperUrl);
+                Console.WriteLine($"[DEBUG] ScraperAPI Response: {response.StatusCode}");
+                Console.WriteLine($"[DEBUG] Response Content-Type: {response.Content.Headers.ContentType}");
+                Console.WriteLine($"[DEBUG] Response Content-Encoding: {response.Content.Headers.ContentEncoding}");
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    // Read content properly handling encoding
+                    var content = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"[DEBUG] ScraperAPI content length: {content?.Length}");
+                    
+                    // Debug: Show first 500 characters of content to understand the structure
+                    if (!string.IsNullOrEmpty(content))
+                    {
+                        var preview = content.Length > 500 ? content.Substring(0, 500) : content;
+                        Console.WriteLine($"[DEBUG] ScraperAPI content preview: {preview}");
+                        
+                        // Check if content appears to be binary/compressed
+                        var binaryCharCount = content.Take(100).Count(c => c < 32 && c != '\r' && c != '\n' && c != '\t');
+                        if (binaryCharCount > 10)
+                        {
+                            Console.WriteLine($"[DEBUG] Content appears to be binary/compressed (binary chars: {binaryCharCount}/100)");
+                            
+                            // Try reading as bytes and check for common compression signatures
+                            var bytes = await response.Content.ReadAsByteArrayAsync();
+                            Console.WriteLine($"[DEBUG] Raw content length: {bytes.Length} bytes");
+                            Console.WriteLine($"[DEBUG] First 20 bytes: {string.Join(" ", bytes.Take(20).Select(b => b.ToString("X2")))}");
+                            
+                            // ScraperAPI should return uncompressed HTML, if we're getting binary data, it might be an error
+                            Console.WriteLine("[DEBUG] ScraperAPI returned binary/compressed content instead of HTML");
+                            throw new Exception("ScraperAPI returned binary/compressed content instead of HTML");
+                        }
+                    }
+                    
+                    // More flexible HTML validation - check for any HTML-like content
+                    if (!string.IsNullOrEmpty(content) && 
+                        (content.Contains("<html", StringComparison.OrdinalIgnoreCase) || 
+                         content.Contains("<!doctype", StringComparison.OrdinalIgnoreCase) ||
+                         content.Contains("<title", StringComparison.OrdinalIgnoreCase) ||
+                         content.Contains("<head", StringComparison.OrdinalIgnoreCase) ||
+                         content.Contains("<body", StringComparison.OrdinalIgnoreCase) ||
+                         content.Contains("<div", StringComparison.OrdinalIgnoreCase) ||
+                         content.Contains("<meta", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        Console.WriteLine("[DEBUG] ScraperAPI succeeded!");
+                        return content;
+                    }
+                    else
+                    {
+                        Console.WriteLine("[DEBUG] ScraperAPI returned invalid HTML content");
+                        Console.WriteLine($"[DEBUG] Content does not contain standard HTML tags");
+                    }
+                }
+                
+                throw new Exception($"ScraperAPI returned: {response.StatusCode} - {response.ReasonPhrase}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DEBUG] ScraperAPI failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
         /// Retrieves the HTML content of a given URL.
+        /// Strategy: Always try direct access first to save ScraperAPI tokens, only fallback when blocked.
         /// </summary>
         /// <param name="url">The URL to fetch content from.</param>
         /// <returns>The HTML content as a string.</returns>
@@ -1085,6 +1408,7 @@ namespace VUniBox.Services.Metadata
         {
             Exception? lastException = null;
             
+            // STEP 1: Always try direct access first to save ScraperAPI tokens
             // Try different User-Agent strings to bypass restrictions
             var userAgents = new[]
             {
@@ -1295,7 +1619,22 @@ namespace VUniBox.Services.Metadata
                 }
             }
 
-            // If all attempts failed, try alternative URL strategies before giving up
+            // STEP 2: Only use ScraperAPI as fallback when direct access fails (to save tokens)
+            // This ensures we only pay for ScraperAPI when absolutely necessary
+            try
+            {
+                var scraperContent = await GetPageContentWithScraperAPI(url);
+                if (!string.IsNullOrEmpty(scraperContent))
+                {
+                    return scraperContent;
+                }
+            }
+            catch (Exception scraperEx)
+            {
+                Console.WriteLine($"[DEBUG] ScraperAPI also failed: {scraperEx.Message}");
+            }
+
+            // If ScraperAPI failed, try alternative URL strategies
             Console.WriteLine("[DEBUG] Trying alternative URL strategies...");
             var altContent = await TryAlternativeUrlStrategies(url);
             if (!string.IsNullOrEmpty(altContent))
@@ -1336,6 +1675,1091 @@ namespace VUniBox.Services.Metadata
             // If all attempts failed, throw the last exception
             throw new Exception($"Failed to fetch page content after {userAgents.Length} attempts. Last error: {lastException?.Message}");
         }
+
+        #region Website Detection Methods
+        
+        /// <summary>
+        /// Checks if the URL is from ResearchGate (kept for specialized metadata extraction).
+        /// </summary>
+        /// <param name="url">URL to check</param>
+        /// <returns>True if URL is from ResearchGate</returns>
+        private bool IsResearchGateUrl(string url) => url.Contains("researchgate.net");
+
+        private bool IsArxivUrl(string url) => url.Contains("arxiv.org");
+        private bool IsPubMedUrl(string url) => url.Contains("pubmed.ncbi.nlm.nih.gov") || url.Contains("ncbi.nlm.nih.gov");
+        private bool IsIEEEUrl(string url) => url.Contains("ieeexplore.ieee.org") || url.Contains("ieee.org");
+        private bool IsSpringerUrl(string url) => url.Contains("link.springer.com") || url.Contains("springer.com");
+        private bool IsGoogleScholarUrl(string url) => url.Contains("scholar.google.com");
+        private bool IsJSTORUrl(string url) => url.Contains("jstor.org");
+        private bool IsScienceDirectUrl(string url) => url.Contains("sciencedirect.com");
+
+        #endregion
+
+        #region Specialized Metadata Extractors
+
+        /// <summary>
+        /// Extracts metadata from arXiv papers.
+        /// </summary>
+        private DocumentMetadataDto ExtractArxivMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "arXiv" };
+            
+            Console.WriteLine("[DEBUG] Starting arXiv-specific metadata extraction");
+
+            // Extract title - try multiple selectors
+            var titleSelectors = new[]
+            {
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='title mathjax']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        metadata.Title = title.Replace("Title:", "").Replace("[arXiv:", "").Trim();
+                        Console.WriteLine($"[DEBUG] arXiv title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract authors - try citation meta first, then DOM
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] arXiv authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors
+                var authorsElement = doc.DocumentNode.SelectSingleNode("//div[@class='authors']");
+                if (authorsElement != null)
+                {
+                    var authorLinks = authorsElement.SelectNodes(".//a");
+                    if (authorLinks != null)
+                    {
+                        var authors = authorLinks.Select(a => a.InnerText?.Trim())
+                                                .Where(a => !string.IsNullOrEmpty(a))
+                                                .ToList();
+                        if (authors.Any())
+                        {
+                            metadata.Authors = string.Join(", ", authors);
+                            metadata.Author = authors.First();
+                            Console.WriteLine($"[DEBUG] arXiv authors via DOM: {metadata.Authors}");
+                        }
+                    }
+                }
+            }
+
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
+            {
+                "//meta[@name='citation_abstract']",
+                "//meta[@property='og:description']",
+                "//blockquote[@class='abstract mathjax']",
+                "//blockquote[contains(@class, 'abstract')]",
+                "//div[@class='abstract']"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        metadata.Abstract = abstractText.Replace("Abstract:", "").Trim();
+                        metadata.Description = metadata.Abstract;
+                        Console.WriteLine($"[DEBUG] arXiv abstract found via {selector}: {metadata.Abstract.Substring(0, Math.Min(100, metadata.Abstract.Length))}...");
+                        break;
+                    }
+                }
+            }
+
+            // Extract arXiv ID and set DOI-like identifier
+            var arxivMatch = System.Text.RegularExpressions.Regex.Match(url, @"abs/(\d+\.\d+)");
+            if (arxivMatch.Success)
+            {
+                metadata.DOI = $"arXiv:{arxivMatch.Groups[1].Value}";
+                Console.WriteLine($"[DEBUG] arXiv ID extracted: {metadata.DOI}");
+            }
+
+            // Extract subject/category
+            var subjectElement = doc.DocumentNode.SelectSingleNode("//td[@class='tablecell subjects']") ??
+                               doc.DocumentNode.SelectSingleNode("//span[@class='primary-subject']");
+            if (subjectElement != null)
+            {
+                metadata.Subject = subjectElement.InnerText?.Trim();
+                Console.WriteLine($"[DEBUG] arXiv subject: {metadata.Subject}");
+            }
+
+            metadata.Publisher = "arXiv";
+            metadata.Language = "en";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            Console.WriteLine("[DEBUG] arXiv metadata extraction completed");
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts metadata from PubMed articles.
+        /// </summary>
+        private DocumentMetadataDto ExtractPubMedMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "PubMed" };
+            
+            Console.WriteLine("[DEBUG] Starting PubMed-specific metadata extraction");
+
+            // Extract title - prioritize OpenGraph and citation meta
+            var titleSelectors = new[]
+            {
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='heading-title']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up PubMed-specific suffixes
+                        metadata.Title = title.Replace("- PubMed", "").Replace("PubMed", "").Trim();
+                        Console.WriteLine($"[DEBUG] PubMed title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract authors - try citation meta first, then DOM
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] PubMed authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors for authors
+                var authorSelectors = new[]
+                {
+                    "//div[@class='authors-list']//a[@class='full-name']",
+                    "//div[contains(@class, 'authors')]//span[contains(@class, 'authors-list-item')]",
+                    "//div[@class='auths']//a"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] PubMed authors via DOM: {metadata.Authors}");
+                }
+            }
+
+            // Extract journal
+            var journalSelectors = new[]
+            {
+                "//meta[@name='citation_journal_title']",
+                "//meta[@name='citation_journal_abbrev']",
+                "//button[@id='full-view-journal-trigger']"
+            };
+
+            foreach (var selector in journalSelectors)
+            {
+                var journalElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (journalElement != null)
+                {
+                    var journal = journalElement.Name == "meta" 
+                        ? GetAttributeValue(journalElement, "content")
+                        : journalElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(journal))
+                    {
+                        metadata.Journal = journal;
+                        Console.WriteLine($"[DEBUG] PubMed journal via {selector}: {metadata.Journal}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract DOI
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] PubMed DOI: {metadata.DOI}");
+            }
+
+            // Extract publication date
+            var dateSelectors = new[]
+            {
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//span[@class='cit']"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = dateElement.Name == "meta" 
+                        ? GetAttributeValue(dateElement, "content")
+                        : dateElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] PubMed date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
+            {
+                "//meta[@property='og:description']",
+                "//meta[@name='citation_abstract']",
+                "//meta[@name='description']",
+                "//div[@class='abstract-content selected']",
+                "//div[@id='enc-abstract']//p",
+                "//div[contains(@class, 'abstract')]"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        // Clean up PubMed-specific suffixes
+                        abstractText = abstractText.Replace("PubMed", "").Trim();
+                        metadata.Abstract = abstractText;
+                        metadata.Description = abstractText;
+                        Console.WriteLine($"[DEBUG] PubMed abstract found via {selector}: {abstractText.Substring(0, Math.Min(100, abstractText.Length))}...");
+                        break;
+                    }
+                }
+            }
+
+            metadata.Publisher = "PubMed";
+            metadata.Language = "en";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            Console.WriteLine("[DEBUG] PubMed metadata extraction completed");
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts metadata from IEEE Xplore articles.
+        /// </summary>
+        private DocumentMetadataDto ExtractIEEEMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "IEEE Xplore" };
+            
+            Console.WriteLine("[DEBUG] Starting IEEE-specific metadata extraction");
+
+            // Extract title - prioritize OpenGraph and citation meta
+            var titleSelectors = new[]
+            {
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='document-title']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up IEEE-specific prefixes
+                        metadata.Title = title.Replace("IEEE Xplore", "").Replace("| IEEE", "").Trim();
+                        Console.WriteLine($"[DEBUG] IEEE title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract authors - try citation meta first, then DOM
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] IEEE authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors for authors
+                var authorSelectors = new[]
+                {
+                    "//div[contains(@class, 'authors')]//span[contains(@class, 'author-name')]",
+                    "//div[@class='authors-info']//a",
+                    "//span[@class='authors-list']//a"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] IEEE authors via DOM: {metadata.Authors}");
+                }
+            }
+
+            // Extract conference/journal
+            var venueSelectors = new[]
+            {
+                "//meta[@name='citation_conference_title']",
+                "//meta[@name='citation_journal_title']",
+                "//meta[@property='og:site_name']"
+            };
+
+            foreach (var selector in venueSelectors)
+            {
+                var venueElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (venueElement != null)
+                {
+                    var venue = GetAttributeValue(venueElement, "content");
+                    if (!string.IsNullOrEmpty(venue))
+                    {
+                        metadata.Journal = venue;
+                        Console.WriteLine($"[DEBUG] IEEE venue via {selector}: {metadata.Journal}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract DOI
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] IEEE DOI: {metadata.DOI}");
+            }
+
+            // Extract publication date
+            var dateSelectors = new[]
+            {
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//meta[@name='citation_online_date']"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = GetAttributeValue(dateElement, "content");
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] IEEE date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
+            {
+                "//meta[@property='og:description']",
+                "//meta[@name='citation_abstract']",
+                "//meta[@name='description']",
+                "//div[@class='abstract-text']",
+                "//div[contains(@class, 'abstract')]"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        // Clean up IEEE-specific suffixes
+                        abstractText = abstractText.Replace("IEEE Xplore", "").Trim();
+                        metadata.Abstract = abstractText;
+                        metadata.Description = abstractText;
+                        Console.WriteLine($"[DEBUG] IEEE abstract found via {selector}: {abstractText.Substring(0, Math.Min(100, abstractText.Length))}...");
+                        break;
+                    }
+                }
+            }
+
+            metadata.Publisher = "IEEE";
+            metadata.Language = "en";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            Console.WriteLine("[DEBUG] IEEE metadata extraction completed");
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts metadata from Springer articles.
+        /// </summary>
+        private DocumentMetadataDto ExtractSpringerMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "Springer" };
+            
+            Console.WriteLine("[DEBUG] Starting Springer-specific metadata extraction");
+
+            // Extract title - prioritize OpenGraph and citation meta
+            var titleSelectors = new[]
+            {
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='c-article-title']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up Springer-specific prefixes
+                        metadata.Title = title.Replace("| SpringerLink", "").Replace("Springer", "").Trim();
+                        Console.WriteLine($"[DEBUG] Springer title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract authors - try citation meta first, then DOM
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Springer authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors for authors
+                var authorSelectors = new[]
+                {
+                    "//div[contains(@class, 'c-article-authors')]//a[contains(@class, 'c-author-name')]",
+                    "//ol[contains(@class, 'c-article-author-list')]//span[@class='c-article-author-name']",
+                    "//div[@class='authors-list']//a"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Springer authors via DOM: {metadata.Authors}");
+                }
+            }
+
+            // Extract journal
+            var journalSelectors = new[]
+            {
+                "//meta[@name='citation_journal_title']",
+                "//meta[@property='og:site_name']",
+                "//span[@class='JournalTitle']"
+            };
+
+            foreach (var selector in journalSelectors)
+            {
+                var journalElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (journalElement != null)
+                {
+                    var journal = journalElement.Name == "meta" 
+                        ? GetAttributeValue(journalElement, "content")
+                        : journalElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(journal))
+                    {
+                        metadata.Journal = journal;
+                        Console.WriteLine($"[DEBUG] Springer journal via {selector}: {metadata.Journal}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract DOI
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] Springer DOI: {metadata.DOI}");
+            }
+
+            // Extract publication date
+            var dateSelectors = new[]
+            {
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//meta[@name='citation_online_date']"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = GetAttributeValue(dateElement, "content");
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] Springer date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
+            {
+                "//meta[@property='og:description']",
+                "//meta[@name='citation_abstract']",
+                "//meta[@name='description']",
+                "//div[@class='c-article__section']//div[@id='Abs1-content']",
+                "//section[@class='Abstract']//p",
+                "//div[contains(@class, 'abstract')]"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        // Clean up Springer-specific suffixes
+                        abstractText = abstractText.Replace("SpringerLink", "").Trim();
+                        metadata.Abstract = abstractText;
+                        metadata.Description = abstractText;
+                        Console.WriteLine($"[DEBUG] Springer abstract found via {selector}: {abstractText.Substring(0, Math.Min(100, abstractText.Length))}...");
+                        break;
+                    }
+                }
+            }
+
+            metadata.Publisher = "Springer";
+            metadata.Language = "en";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            Console.WriteLine("[DEBUG] Springer metadata extraction completed");
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts metadata from Google Scholar (limited due to blocking).
+        /// </summary>
+        private DocumentMetadataDto ExtractGoogleScholarMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "Google Scholar" };
+            
+            // Google Scholar heavily blocks automated access, so this is mostly a fallback
+            var titleElement = doc.DocumentNode.SelectSingleNode("//title");
+            if (titleElement != null)
+            {
+                metadata.Title = titleElement.InnerText?.Replace(" - Google Scholar", "").Trim();
+            }
+
+            metadata.Publisher = "Google Scholar";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts metadata from JSTOR articles.
+        /// </summary>
+        private DocumentMetadataDto ExtractJSTORMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "JSTOR" };
+
+            // Extract title
+            var titleElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_title']") ??
+                              doc.DocumentNode.SelectSingleNode("//h1[@class='title']");
+            
+            if (titleElement != null)
+            {
+                metadata.Title = titleElement.Name == "meta" 
+                    ? GetAttributeValue(titleElement, "content") 
+                    : titleElement.InnerText?.Trim();
+            }
+
+            // Extract authors
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null)
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
+                metadata.Authors = string.Join(", ", authors);
+                metadata.Author = authors.FirstOrDefault();
+            }
+
+            // Extract journal
+            var journalElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_journal_title']");
+            if (journalElement != null)
+            {
+                metadata.Journal = GetAttributeValue(journalElement, "content");
+            }
+
+            // Extract DOI
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+            }
+
+            metadata.Publisher = "JSTOR";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts metadata from ScienceDirect articles.
+        /// </summary>
+        private DocumentMetadataDto ExtractScienceDirectMetadata(HtmlDocument doc, string url)
+        {
+            var metadata = new DocumentMetadataDto { URL = url, Source = "ScienceDirect" };
+
+            // Extract title
+            var titleElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_title']") ??
+                              doc.DocumentNode.SelectSingleNode("//h1[@class='title-text']");
+            
+            if (titleElement != null)
+            {
+                metadata.Title = titleElement.Name == "meta" 
+                    ? GetAttributeValue(titleElement, "content") 
+                    : titleElement.InnerText?.Trim();
+            }
+
+            // Extract authors
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null)
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
+                metadata.Authors = string.Join(", ", authors);
+                metadata.Author = authors.FirstOrDefault();
+            }
+
+            // Extract journal
+            var journalElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_journal_title']");
+            if (journalElement != null)
+            {
+                metadata.Journal = GetAttributeValue(journalElement, "content");
+            }
+
+            // Extract DOI
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+            }
+
+            // Extract publication date
+            var dateElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_publication_date']");
+            if (dateElement != null && DateTime.TryParse(GetAttributeValue(dateElement, "content"), out var pubDate))
+            {
+                metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+            }
+
+            metadata.Publisher = "Elsevier";
+            metadata.RetrievedDate = DateTime.UtcNow;
+            
+            return metadata;
+        }
+
+        /// <summary>
+        /// Extracts standard web metadata using common meta tags.
+        /// </summary>
+        private DocumentMetadataDto ExtractStandardWebMetadata(HtmlDocument doc, string url)
+        {
+            Console.WriteLine($"[DEBUG] ExtractStandardWebMetadata called for: {url}");
+            var metadata = new DocumentMetadataDto { URL = url };
+
+            // Determine source from URL
+            var uri = new Uri(url);
+            var domain = uri.Host.ToLowerInvariant();
+            metadata.Source = domain.Replace("www.", "").Split('.')[0];
+
+            // Enhanced title extraction with multiple strategies
+            var titleSelectors = new[]
+            {
+                "//meta[@property='og:title']",
+                "//meta[@name='twitter:title']", 
+                "//meta[@name='citation_title']",
+                "//title",
+                "//h1[contains(@class, 'title')]",
+                "//h1[@class='entry-title']",
+                "//h1[@class='article-title']",
+                "//h1"
+            };
+
+            Console.WriteLine("[DEBUG] Extracting title using enhanced selectors...");
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                Console.WriteLine($"[DEBUG] Title selector '{selector}' found: {titleElement != null}");
+                
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    Console.WriteLine($"[DEBUG] Extracted title: '{title}' (length: {title?.Length ?? 0})");
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up common website suffixes
+                        title = CleanTitle(title, domain);
+                        metadata.Title = title;
+                        Console.WriteLine($"[DEBUG] Title accepted: {title}");
+                        break;
+                    }
+                }
+            }
+
+            // Enhanced description/abstract extraction
+            Console.WriteLine("[DEBUG] Extracting description...");
+            var descriptionSelectors = new[]
+            {
+                "//meta[@property='og:description']",
+                "//meta[@name='description']",
+                "//meta[@name='twitter:description']",
+                "//meta[@name='citation_abstract']",
+                "//div[contains(@class, 'abstract')]",
+                "//div[contains(@class, 'summary')]",
+                "//div[contains(@class, 'excerpt')]",
+                "//p[contains(@class, 'description')]"
+            };
+
+            foreach (var selector in descriptionSelectors)
+            {
+                var descElement = doc.DocumentNode.SelectSingleNode(selector);
+                Console.WriteLine($"[DEBUG] Description selector '{selector}' found: {descElement != null}");
+                
+                if (descElement != null)
+                {
+                    var description = descElement.Name == "meta" 
+                        ? GetAttributeValue(descElement, "content") 
+                        : descElement.InnerText?.Trim();
+                    
+                    Console.WriteLine($"[DEBUG] Extracted description: '{description?.Substring(0, Math.Min(100, description?.Length ?? 0))}...' (length: {description?.Length ?? 0})");
+                    if (!string.IsNullOrEmpty(description) && description.Length > 30)
+                    {
+                        metadata.Description = description;
+                        metadata.Abstract = description;
+                        Console.WriteLine($"[DEBUG] Description accepted (length: {description.Length})");
+                        break;
+                    }
+                }
+            }
+
+            // Enhanced author extraction
+            Console.WriteLine("[DEBUG] Extracting authors...");
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
+            {
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to other author selectors
+                var authorSelectors = new[]
+                {
+                    "//meta[@name='author']",
+                    "//meta[@property='article:author']",
+                    "//span[contains(@class, 'author')]",
+                    "//div[contains(@class, 'author')]",
+                    "//a[contains(@class, 'author')]"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.Name == "meta" 
+                                ? GetAttributeValue(elem, "content")
+                                : elem.InnerText?.Trim();
+                            
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2 && author.Length < 100)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors.Distinct());
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Authors via DOM: {metadata.Authors}");
+                }
+            }
+
+            // Enhanced publication date extraction
+            Console.WriteLine("[DEBUG] Extracting publication date...");
+            var dateSelectors = new[]
+            {
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//meta[@property='article:published_time']",
+                "//meta[@name='date']",
+                "//time[@class='published']",
+                "//span[contains(@class, 'date')]"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = dateElement.Name == "meta" 
+                        ? GetAttributeValue(dateElement, "content")
+                        : dateElement.GetAttributeValue("datetime", "") ?? dateElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] Publication date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
+            }
+
+            // Enhanced journal/publisher extraction
+            Console.WriteLine("[DEBUG] Extracting journal/publisher...");
+            var publisherSelectors = new[]
+            {
+                "//meta[@name='citation_journal_title']",
+                "//meta[@name='citation_publisher']",
+                "//meta[@property='og:site_name']",
+                "//meta[@name='publisher']"
+            };
+
+            foreach (var selector in publisherSelectors)
+            {
+                var pubElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (pubElement != null)
+                {
+                    var publisher = GetAttributeValue(pubElement, "content");
+                    if (!string.IsNullOrEmpty(publisher))
+                    {
+                        if (selector.Contains("journal"))
+                        {
+                            metadata.Journal = publisher;
+                        }
+                        else
+                        {
+                            metadata.Publisher = publisher;
+                        }
+                        Console.WriteLine($"[DEBUG] Publisher/Journal via {selector}: {publisher}");
+                        break;
+                    }
+                }
+            }
+
+            // DOI extraction
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] DOI found: {metadata.DOI}");
+            }
+
+            // Set language (default to English for most academic content)
+            metadata.Language = "en";
+            metadata.RetrievedDate = DateTime.UtcNow;
+
+            // If no source was set, use the domain
+            if (string.IsNullOrEmpty(metadata.Source))
+            {
+                metadata.Source = domain;
+            }
+
+            Console.WriteLine($"[DEBUG] ExtractStandardWebMetadata completed. Final metadata:");
+            Console.WriteLine($"[DEBUG] - Title: {metadata.Title}");
+            Console.WriteLine($"[DEBUG] - Authors: {metadata.Authors}");
+            Console.WriteLine($"[DEBUG] - Description length: {metadata.Description?.Length ?? 0}");
+            Console.WriteLine($"[DEBUG] - Source: {metadata.Source}");
+
+            return metadata;
+        }
+
+        /// <summary>
+        /// Cleans title by removing common website suffixes and formatting.
+        /// </summary>
+        private string CleanTitle(string title, string domain)
+        {
+            if (string.IsNullOrEmpty(title)) return title;
+
+            // Common suffixes to remove
+            var suffixesToRemove = new[]
+            {
+                $" | {domain}",
+                $" - {domain}",
+                " | Home",
+                " - Home",
+                " | Homepage",
+                " - Homepage"
+            };
+
+            foreach (var suffix in suffixesToRemove)
+            {
+                if (title.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    title = title.Substring(0, title.Length - suffix.Length);
+                }
+            }
+
+            return title.Trim();
+        }
+
+        #endregion
 
         /// <summary>
         /// Gets the value of a specified HTML attribute from a node.
