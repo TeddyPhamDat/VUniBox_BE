@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VUniBox.Services.Admin;
 
 // Set console encoding to UTF-8 for proper Vietnamese character display
 Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -110,6 +111,9 @@ builder.Services.AddSession(options =>
 
 // Register Memory Cache for forgot password verification
 builder.Services.AddMemoryCache();
+
+// Register Admin Dashboard Service
+builder.Services.AddScoped<IAdminDashboardService, AdminDashboardService>();
 
 // Register Session Chat Service
 builder.Services.AddScoped<SessionChatService>();
