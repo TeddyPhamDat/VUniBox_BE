@@ -12,5 +12,8 @@ namespace VUniBox.Services.Citation
             string type,
             string url,
             string style);
+
+        Task<string> ExtractAuthorWithAIAsync(string prompt);
+        Task<(string author, int? year, string publisher)> ExtractCitationMetadataWithAIAsync(string prompt);
     }
 }

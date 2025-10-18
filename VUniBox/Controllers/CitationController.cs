@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System;
 using System.Threading.Tasks;
 using VUniBox.Models.DTO.Request;
 using VUniBox.Models.DTO.Response;
@@ -214,6 +215,78 @@ namespace VUniBox.Controllers
             };
 
             return Ok(ApiResponse<object>.Success(styles, "Danh sách phong cách trích dẫn được hỗ trợ"));
+        }
+
+        /// <summary>
+        /// Get all citations for a user (simplified view with essential information)
+        /// </summary>
+        /// <param name="userId">User ID</param>
+        /// <returns>List of simplified citations</returns>
+        [HttpGet("user/{userId}")]
+        public async Task<IActionResult> GetUserCitations(int userId)
+        {
+            try
+            {
+                if (userId <= 0)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("ID người dùng không hợp lệ", 400));
+                }
+
+                var citations = await _citationManagementService.GetUserCitationsSimplifiedAsync(userId);
+                return Ok(ApiResponse<object>.Success(citations, "Danh sách trích dẫn của người dùng"));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi server: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Get all citations for a user sorted by author name (A-Z) - simplified view
+        /// </summary>
+        /// <param name="userId">User ID</param>
+        /// <returns>List of simplified citations sorted by author</returns>
+        [HttpGet("user/{userId}/sorted-by-author")]
+        public async Task<IActionResult> GetUserCitationsSortedByAuthor(int userId)
+        {
+            try
+            {
+                if (userId <= 0)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("ID người dùng không hợp lệ", 400));
+                }
+
+                var citations = await _citationManagementService.GetUserCitationsSimplifiedSortedByAuthorAsync(userId);
+                return Ok(ApiResponse<object>.Success(citations, "Danh sách trích dẫn được sắp xếp theo tác giả từ A-Z"));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi server: {ex.Message}", 500));
+            }
+        }
+
+        /// <summary>
+        /// Get all citations for a user with full metadata (admin/debug endpoint)
+        /// </summary>
+        /// <param name="userId">User ID</param>
+        /// <returns>List of citations with full metadata</returns>
+        [HttpGet("user/{userId}/full-metadata")]
+        public async Task<IActionResult> GetUserCitationsFullMetadata(int userId)
+        {
+            try
+            {
+                if (userId <= 0)
+                {
+                    return BadRequest(ApiResponse<object>.Fail("ID người dùng không hợp lệ", 400));
+                }
+
+                var citations = await _citationManagementService.GetUserCitationsAsync(userId);
+                return Ok(ApiResponse<object>.Success(citations, "Danh sách trích dẫn với metadata đầy đủ"));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi server: {ex.Message}", 500));
+            }
         }
     }
 }

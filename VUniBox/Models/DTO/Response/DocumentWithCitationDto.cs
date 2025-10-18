@@ -16,11 +16,11 @@ namespace VUniBox.Models.DTO.Response
         /// <summary>
         /// Gets or sets the formatted citation (direct access).
         /// </summary>
-        public string? FormattedCitation { get; set; }
+        new public string? FormattedCitation { get; set; }
         /// <summary>
         /// Gets or sets the in-text citation (direct access).
         /// </summary>
-        public string? InTextCitation { get; set; }
+        new public string? InTextCitation { get; set; }
         
         /// <summary>
         /// Initializes a new instance of the <see cref="DocumentWithCitationDto"/> class.

@@ -248,12 +248,47 @@ namespace VUniBox.Controllers
                 // Lấy tất cả documents đã saved (status = Saved)
                 var savedDocuments = await _documentLifecycleService.GetSavedDocumentsAsync(userId);
 
+                // Create documents with citation data
+                var documentsWithCitations = new List<DocumentWithCitationsDto>();
+                
+                foreach (var document in savedDocuments)
+                {
+                    // Get latest citation for the document
+                    var latestDocument = await _documentLifecycleService.GetDocumentByIdAsync(document.DocumentId);
+                    var existingCitation = latestDocument?.Citations?.OrderByDescending(c => c.CreatedAt).FirstOrDefault();
+                    
+                    // If no citation exists, generate APA citation automatically (fast method)
+                    if (existingCitation == null)
+                    {
+                        try
+                        {
+                            var (formattedCitation, inTextCitation) = await _citationManagementService.GenerateQuickCitationAsync(document, "APA");
+                            
+                            // Use the generated citation directly
+                            var docWithCitation = new DocumentWithCitationsDto(document);
+                            docWithCitation.CitationStyle = "APA";
+                            docWithCitation.FormattedCitation = formattedCitation;
+                            docWithCitation.InTextCitation = inTextCitation;
+                            documentsWithCitations.Add(docWithCitation);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[ERROR] Failed to generate quick citation for document {document.DocumentId}: {ex.Message}");
+                            documentsWithCitations.Add(new DocumentWithCitationsDto(document));
+                        }
+                    }
+                    else
+                    {
+                        documentsWithCitations.Add(new DocumentWithCitationsDto(document, existingCitation));
+                    }
+                }
+
                 var response = new SavedDocumentsResponse
                 {
                     Success = true,
-                    SavedDocuments = savedDocuments.Select(d => new DocumentDto(d)).ToList(),
+                    SavedDocuments = documentsWithCitations.Cast<DocumentDto>().ToList(),
                     Message = "Tài liệu đã lưu được truy xuất thành công",
-                    TotalCount = savedDocuments.Count
+                    TotalCount = documentsWithCitations.Count
                 };
 
                 return Ok(ApiResponse<SavedDocumentsResponse>.Success(response, "Tài liệu đã lưu được truy xuất"));
@@ -285,12 +320,47 @@ namespace VUniBox.Controllers
             {
                 var allDocuments = await _documentLifecycleService.GetAllDocumentsAsync(userId, status, type);
 
+                // Create documents with citation data
+                var documentsWithCitations = new List<DocumentWithCitationsDto>();
+                
+                foreach (var document in allDocuments)
+                {
+                    // Get latest citation for the document
+                    var latestDocument = await _documentLifecycleService.GetDocumentByIdAsync(document.DocumentId);
+                    var existingCitation = latestDocument?.Citations?.OrderByDescending(c => c.CreatedAt).FirstOrDefault();
+                    
+                    // If no citation exists, generate APA citation automatically (fast method)
+                    if (existingCitation == null)
+                    {
+                        try
+                        {
+                            var (formattedCitation, inTextCitation) = await _citationManagementService.GenerateQuickCitationAsync(document, "APA");
+                            
+                            // Use the generated citation directly
+                            var docWithCitation = new DocumentWithCitationsDto(document);
+                            docWithCitation.CitationStyle = "APA";
+                            docWithCitation.FormattedCitation = formattedCitation;
+                            docWithCitation.InTextCitation = inTextCitation;
+                            documentsWithCitations.Add(docWithCitation);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[ERROR] Failed to generate quick citation for document {document.DocumentId}: {ex.Message}");
+                            documentsWithCitations.Add(new DocumentWithCitationsDto(document));
+                        }
+                    }
+                    else
+                    {
+                        documentsWithCitations.Add(new DocumentWithCitationsDto(document, existingCitation));
+                    }
+                }
+
                 var response = new AllDocumentsResponse
                 {
                     Success = true,
-                    Documents = allDocuments.Select(d => new DocumentDto(d)).ToList(),
+                    Documents = documentsWithCitations.Cast<DocumentDto>().ToList(),
                     Message = "Tất cả tài liệu được truy xuất thành công",
-                    TotalCount = allDocuments.Count,
+                    TotalCount = documentsWithCitations.Count,
                     FilteredBy = new { Status = status, Type = type }
                 };
 

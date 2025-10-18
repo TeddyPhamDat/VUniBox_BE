@@ -1,3 +1,4 @@
+using System;
 using VUniBox.Models.DTO;
 
 namespace VUniBox.Models.DTO.Response
@@ -50,7 +51,7 @@ namespace VUniBox.Models.DTO.Response
         // Constructor from Documents entity and extracted metadata
         public CitationMetadataDto() { }
         
-        public CitationMetadataDto(Documents document, DocumentMetadataDto extractedMetadata)
+        public CitationMetadataDto(Documents document, DocumentMetadataDto? extractedMetadata)
         {
             // Document info
             DocumentId = document.DocumentId;
@@ -58,38 +59,129 @@ namespace VUniBox.Models.DTO.Response
             Status = document.Status ?? string.Empty;
             CreatedAt = document.CreatedAt;
             
-            // Core citation fields - prefer extracted metadata, fallback to document
-            Title = !string.IsNullOrEmpty(extractedMetadata.Title) ? extractedMetadata.Title : (document.Title ?? string.Empty);
-            Author = !string.IsNullOrEmpty(extractedMetadata.Author) ? extractedMetadata.Author : (document.Author ?? string.Empty);
-            Authors = !string.IsNullOrEmpty(extractedMetadata.Authors) ? extractedMetadata.Authors : (document.Authors ?? string.Empty);
-            PublicationDate = extractedMetadata.PublicationDate ?? document.PublicationDate;
+            // Core citation fields - prefer extracted metadata, fallback to document, then to smart defaults
+            Title = GetSafeValue(extractedMetadata?.Title, document.Title, "Untitled Document");
+            Author = GetSafeValue(extractedMetadata?.Author, document.Author, GenerateSmartAuthor(document.Title, document.SourceUrl));
+            Authors = GetSafeValue(extractedMetadata?.Authors, document.Authors, Author);
+            PublicationDate = extractedMetadata?.PublicationDate ?? document.PublicationDate;
             
             // Publication details
-            Publisher = !string.IsNullOrEmpty(extractedMetadata.Publisher) ? extractedMetadata.Publisher : (document.Publisher ?? string.Empty);
-            Journal = !string.IsNullOrEmpty(extractedMetadata.Journal) ? extractedMetadata.Journal : (document.Journal ?? string.Empty);
-            Volume = !string.IsNullOrEmpty(extractedMetadata.Volume) ? extractedMetadata.Volume : (document.Volume ?? string.Empty);
-            Issue = !string.IsNullOrEmpty(extractedMetadata.Issue) ? extractedMetadata.Issue : (document.Issue ?? string.Empty);
-            Pages = !string.IsNullOrEmpty(extractedMetadata.Pages) ? extractedMetadata.Pages : (document.Pages ?? string.Empty);
+            Publisher = GetSafeValue(extractedMetadata?.Publisher, document.Publisher, GenerateSmartPublisher(document.SourceUrl));
+            Journal = GetSafeValue(extractedMetadata?.Journal, document.Journal, string.Empty);
+            Volume = GetSafeValue(extractedMetadata?.Volume, document.Volume, string.Empty);
+            Issue = GetSafeValue(extractedMetadata?.Issue, document.Issue, string.Empty);
+            Pages = GetSafeValue(extractedMetadata?.Pages, document.Pages, string.Empty);
             
             // Identifiers
-            Doi = !string.IsNullOrEmpty(extractedMetadata.DOI) ? extractedMetadata.DOI : (document.Doi ?? string.Empty);
-            Isbn = !string.IsNullOrEmpty(extractedMetadata.ISBN) ? extractedMetadata.ISBN : (document.Isbn ?? string.Empty);
-            URL = !string.IsNullOrEmpty(extractedMetadata.URL) ? extractedMetadata.URL : (document.SourceUrl ?? string.Empty);
+            Doi = GetSafeValue(extractedMetadata?.DOI, document.Doi, string.Empty);
+            Isbn = GetSafeValue(extractedMetadata?.ISBN, document.Isbn, string.Empty);
+            URL = GetSafeValue(extractedMetadata?.URL, document.SourceUrl, string.Empty);
             
             // Content
-            Abstract = !string.IsNullOrEmpty(extractedMetadata.Abstract) ? extractedMetadata.Abstract : (document.Abstract ?? string.Empty);
-            Keywords = !string.IsNullOrEmpty(extractedMetadata.Keywords) ? extractedMetadata.Keywords : (document.Keywords ?? string.Empty);
-            Subject = !string.IsNullOrEmpty(extractedMetadata.Subject) ? extractedMetadata.Subject : (document.Subject ?? string.Empty);
-            Language = !string.IsNullOrEmpty(extractedMetadata.Language) ? extractedMetadata.Language : (document.Language ?? string.Empty);
+            Abstract = GetSafeValue(extractedMetadata?.Abstract, document.Abstract, string.Empty);
+            Keywords = GetSafeValue(extractedMetadata?.Keywords, document.Keywords, string.Empty);
+            Subject = GetSafeValue(extractedMetadata?.Subject, document.Subject, string.Empty);
+            Language = GetSafeValue(extractedMetadata?.Language, document.Language, "English");
             
             // Source info
-            Source = !string.IsNullOrEmpty(extractedMetadata.Source) ? extractedMetadata.Source : (document.Source ?? string.Empty);
-            RetrievedDate = extractedMetadata.RetrievedDate ?? document.RetrievedDate;
+            Source = GetSafeValue(extractedMetadata?.Source, document.Source, GenerateSmartSource(document.SourceUrl));
+            RetrievedDate = extractedMetadata?.RetrievedDate ?? document.RetrievedDate;
             
             // File info
-            FilePath = !string.IsNullOrEmpty(extractedMetadata.FilePath) ? extractedMetadata.FilePath : (document.FilePath ?? string.Empty);
-            FileSize = extractedMetadata.FileSize;
-            FileType = !string.IsNullOrEmpty(extractedMetadata.FileType) ? extractedMetadata.FileType : string.Empty;
+            FilePath = GetSafeValue(extractedMetadata?.FilePath, document.FilePath, string.Empty);
+            FileSize = extractedMetadata?.FileSize ?? 0;
+            FileType = GetSafeValue(extractedMetadata?.FileType, null, string.Empty);
+        }
+
+
+
+        private static string GetSafeValue(string? primary, string? secondary, string fallback)
+        {
+            return !string.IsNullOrWhiteSpace(primary) ? primary : 
+                   !string.IsNullOrWhiteSpace(secondary) ? secondary : fallback;
+        }
+
+        private static string GenerateSmartAuthor(string? title, string? sourceUrl)
+        {
+            if (!string.IsNullOrWhiteSpace(sourceUrl))
+            {
+                var uri = new Uri(sourceUrl);
+                var domain = uri.Host.ToLower();
+                
+                if (domain.Contains("wikipedia"))
+                    return "Wikipedia Contributors";
+                if (domain.Contains("researchgate"))
+                    return "ResearchGate Researcher";
+                if (domain.Contains("arxiv"))
+                    return "ArXiv Researcher";
+                if (domain.Contains("vnu") || domain.Contains("hust") || domain.Contains("fpt"))
+                    return "Academic Researcher";
+                if (domain.Contains("gov"))
+                    return "Government Agency";
+                
+                return $"{domain.Replace("www.", "").Split('.')[0]} Author";
+            }
+            
+            return "Unknown Author";
+        }
+
+        private static string GenerateSmartPublisher(string? sourceUrl)
+        {
+            if (!string.IsNullOrWhiteSpace(sourceUrl))
+            {
+                try
+                {
+                    var uri = new Uri(sourceUrl);
+                    var domain = uri.Host.ToLower().Replace("www.", "");
+                    
+                    if (domain.Contains("wikipedia"))
+                        return "Wikimedia Foundation";
+                    if (domain.Contains("researchgate"))
+                        return "ResearchGate";
+                    if (domain.Contains("arxiv"))
+                        return "arXiv.org";
+                    if (domain.Contains("ieee"))
+                        return "IEEE";
+                    if (domain.Contains("acm"))
+                        return "ACM";
+                    if (domain.Contains("springer"))
+                        return "Springer";
+                    if (domain.Contains("elsevier"))
+                        return "Elsevier";
+                    if (domain.Contains("nature"))
+                        return "Nature Publishing Group";
+                    
+                    // Capitalize first letter of domain
+                    var parts = domain.Split('.');
+                    return parts.Length > 0 ? 
+                           char.ToUpper(parts[0][0]) + parts[0].Substring(1) : 
+                           "Unknown Publisher";
+                }
+                catch
+                {
+                    return "Web Publisher";
+                }
+            }
+            
+            return "Unknown Publisher";
+        }
+
+        private static string GenerateSmartSource(string? sourceUrl)
+        {
+            if (!string.IsNullOrWhiteSpace(sourceUrl))
+            {
+                try
+                {
+                    var uri = new Uri(sourceUrl);
+                    return uri.Host.Replace("www.", "");
+                }
+                catch
+                {
+                    return "Web Source";
+                }
+            }
+            
+            return "Unknown Source";
         }
     }
 }

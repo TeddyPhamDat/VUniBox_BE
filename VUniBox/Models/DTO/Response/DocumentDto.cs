@@ -122,6 +122,14 @@ namespace VUniBox.Models.DTO.Response
         /// Gets or sets the citation style for the document.
         /// </summary>
         public string CitationStyle { get; set; } = string.Empty;
+        /// <summary>
+        /// Gets or sets the formatted citation text for this document.
+        /// </summary>
+        public string FormattedCitation { get; set; } = string.Empty;
+        /// <summary>
+        /// Gets or sets the in-text citation for this document.
+        /// </summary>
+        public string InTextCitation { get; set; } = string.Empty;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DocumentDto"/> class.
