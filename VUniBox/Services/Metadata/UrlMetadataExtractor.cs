@@ -509,7 +509,7 @@ namespace VUniBox.Services.Metadata
                                            .ToList();
                     if (authors.Any())
                     {
-                        metadata.Authors = string.Join(", ", authors);
+                        metadata.Authors = LimitAuthors(authors);
                         metadata.Author = authors.First();
                         Console.WriteLine($"[DEBUG] ResearchGate authors via citation meta: {metadata.Authors}");
                     }
@@ -560,7 +560,7 @@ namespace VUniBox.Services.Metadata
 
                     if (authors.Any())
                     {
-                        metadata.Authors = string.Join(", ", authors);
+                        metadata.Authors = LimitAuthors(authors);
                         metadata.Author = authors.First();
                         Console.WriteLine($"[DEBUG] ResearchGate authors via DOM: {metadata.Authors}");
                     }
@@ -821,7 +821,7 @@ namespace VUniBox.Services.Metadata
 
                     if (authorsList.Any())
                     {
-                        metadata.Authors = string.Join(", ", authorsList);
+                        metadata.Authors = LimitAuthors(authorsList);
                         metadata.Author = authorsList.First();
                     }
 
@@ -1886,7 +1886,7 @@ namespace VUniBox.Services.Metadata
                                           .ToList();
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] arXiv authors via citation meta: {metadata.Authors}");
                 }
@@ -1905,7 +1905,7 @@ namespace VUniBox.Services.Metadata
                                                 .ToList();
                         if (authors.Any())
                         {
-                            metadata.Authors = string.Join(", ", authors);
+                            metadata.Authors = LimitAuthors(authors);
                             metadata.Author = authors.First();
                             Console.WriteLine($"[DEBUG] arXiv authors via DOM: {metadata.Authors}");
                         }
@@ -2014,7 +2014,7 @@ namespace VUniBox.Services.Metadata
                                           .ToList();
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] PubMed authors via citation meta: {metadata.Authors}");
                 }
@@ -2049,7 +2049,7 @@ namespace VUniBox.Services.Metadata
 
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] PubMed authors via DOM: {metadata.Authors}");
                 }
@@ -2202,7 +2202,7 @@ namespace VUniBox.Services.Metadata
                                           .ToList();
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] IEEE authors via citation meta: {metadata.Authors}");
                 }
@@ -2237,7 +2237,7 @@ namespace VUniBox.Services.Metadata
 
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] IEEE authors via DOM: {metadata.Authors}");
                 }
@@ -2383,7 +2383,7 @@ namespace VUniBox.Services.Metadata
                                           .ToList();
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] Springer authors via citation meta: {metadata.Authors}");
                 }
@@ -2418,7 +2418,7 @@ namespace VUniBox.Services.Metadata
 
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] Springer authors via DOM: {metadata.Authors}");
                 }
@@ -2564,7 +2564,7 @@ namespace VUniBox.Services.Metadata
             if (authorElements != null)
             {
                 var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
-                metadata.Authors = string.Join(", ", authors);
+                metadata.Authors = LimitAuthors(authors);
                 metadata.Author = authors.FirstOrDefault();
             }
 
@@ -2611,7 +2611,7 @@ namespace VUniBox.Services.Metadata
             if (authorElements != null)
             {
                 var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
-                metadata.Authors = string.Join(", ", authors);
+                metadata.Authors = LimitAuthors(authors);
                 metadata.Author = authors.FirstOrDefault();
             }
 
@@ -2738,7 +2738,7 @@ namespace VUniBox.Services.Metadata
                                           .ToList();
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Authors = LimitAuthors(authors);
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] Authors via citation meta: {metadata.Authors}");
                 }
@@ -2778,7 +2778,7 @@ namespace VUniBox.Services.Metadata
 
                 if (authors.Any())
                 {
-                    metadata.Authors = string.Join(", ", authors.Distinct());
+                    metadata.Authors = LimitAuthors(authors.Distinct().ToList());
                     metadata.Author = authors.First();
                     Console.WriteLine($"[DEBUG] Authors via DOM: {metadata.Authors}");
                 }
@@ -2903,6 +2903,27 @@ namespace VUniBox.Services.Metadata
         }
 
         #endregion
+
+        /// <summary>
+        /// Limits the authors list to first 3 authors plus "et al." if more exist
+        /// </summary>
+        /// <param name="authors">List of author names</param>
+        /// <returns>Limited authors string</returns>
+        private string LimitAuthors(List<string> authors)
+        {
+            if (!authors.Any()) return string.Empty;
+            
+            if (authors.Count > 3)
+            {
+                var limitedAuthors = authors.Take(3).ToList();
+                limitedAuthors.Add("et al.");
+                return string.Join(", ", limitedAuthors);
+            }
+            else
+            {
+                return string.Join(", ", authors);
+            }
+        }
 
         /// <summary>
         /// Gets the value of a specified HTML attribute from a node.

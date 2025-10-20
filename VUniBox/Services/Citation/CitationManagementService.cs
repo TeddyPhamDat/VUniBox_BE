@@ -36,7 +36,7 @@ namespace VUniBox.Services.Citation
             {
                 // Use existing document data directly - SUPER FAST, NO EXTRACTION
                 var title = document.Title ?? "Unknown Title";
-                var authors = document.Authors ?? document.Author ?? "Unknown Author";
+                var authors = document.Author ?? document.Authors ?? "Unknown Author";
                 var year = document.Year;
                 var pubDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "";
                 var docType = document.DocumentType.ToString();
@@ -70,7 +70,7 @@ namespace VUniBox.Services.Citation
             try
             {
                 // Build comprehensive prompt for AI to extract all 4 components
-                var aiPrompt = BuildComprehensiveMetadataPrompt(document.Title, document.SourceUrl, document.Authors, document.Author);
+                var aiPrompt = BuildComprehensiveMetadataPrompt(document.Title, document.SourceUrl, document.Author, document.Authors);
                 
                 // Use AI to extract Author, Year, Title, Publisher
                 var (aiAuthor, aiYear, aiPublisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(aiPrompt);
@@ -78,8 +78,8 @@ namespace VUniBox.Services.Citation
                 // Use extracted data or fallback to existing data
                 var finalTitle = !string.IsNullOrWhiteSpace(document.Title) ? document.Title : "Untitled Document";
                 var finalAuthor = !string.IsNullOrWhiteSpace(aiAuthor) ? aiAuthor : 
-                                (!string.IsNullOrWhiteSpace(document.Authors) ? document.Authors : 
-                                (!string.IsNullOrWhiteSpace(document.Author) ? document.Author : "Unknown Author"));
+                                (!string.IsNullOrWhiteSpace(document.Author) ? document.Author : 
+                                (!string.IsNullOrWhiteSpace(document.Authors) ? document.Authors : "Unknown Author"));
                 var finalYear = aiYear ?? document.Year ?? DateTime.UtcNow.Year;
                 var finalPublisher = !string.IsNullOrWhiteSpace(aiPublisher) ? aiPublisher : 
                                    (!string.IsNullOrWhiteSpace(document.Publisher) ? document.Publisher : "Unknown Publisher");
@@ -107,7 +107,7 @@ namespace VUniBox.Services.Citation
         /// <summary>
         /// Build comprehensive prompt for AI to extract Author, Year, Title, Publisher
         /// </summary>
-        private string BuildComprehensiveMetadataPrompt(string title, string sourceUrl, string authors, string author)
+        private string BuildComprehensiveMetadataPrompt(string title, string sourceUrl, string author, string authors)
         {
             var domain = "";
             if (!string.IsNullOrWhiteSpace(sourceUrl))
@@ -120,7 +120,7 @@ namespace VUniBox.Services.Citation
                 catch { domain = sourceUrl; }
             }
 
-            var existingAuthor = !string.IsNullOrWhiteSpace(authors) ? authors : author ?? "";
+            var existingAuthor = !string.IsNullOrWhiteSpace(author) ? author : authors ?? "";
 
             return $@"Extract complete citation metadata from this academic document. You need to provide all 4 essential components for proper academic citation:
 
@@ -384,10 +384,10 @@ Provide professional, citation-ready metadata that follows academic standards.";
                        ? document.Title 
                        : GetSmartTitleFromUrl(document.SourceUrl);
 
-            var authors = !string.IsNullOrWhiteSpace(document.Authors) 
-                         ? document.Authors 
-                         : (!string.IsNullOrWhiteSpace(document.Author) 
-                            ? document.Author 
+            var authors = !string.IsNullOrWhiteSpace(document.Author) 
+                         ? document.Author 
+                         : (!string.IsNullOrWhiteSpace(document.Authors) 
+                            ? document.Authors 
                             : await ExtractAuthorWithGeminiAI(title, document.SourceUrl));
             
             // Quick date extraction
@@ -444,10 +444,10 @@ Provide professional, citation-ready metadata that follows academic standards.";
                        ? document.Title 
                        : GetSmartTitleFromUrl(document.SourceUrl);
 
-            var authors = !string.IsNullOrWhiteSpace(document.Authors) 
-                         ? document.Authors 
-                         : (!string.IsNullOrWhiteSpace(document.Author) 
-                            ? document.Author 
+            var authors = !string.IsNullOrWhiteSpace(document.Author) 
+                         ? document.Author 
+                         : (!string.IsNullOrWhiteSpace(document.Authors) 
+                            ? document.Authors 
                             : GetSmartAuthorFromUrl(document.SourceUrl));
             
             // Quick date extraction
@@ -512,7 +512,7 @@ Provide professional, citation-ready metadata that follows academic standards.";
                                    (string.IsNullOrWhiteSpace(document.Authors) && string.IsNullOrWhiteSpace(document.Author));
 
             string enhancedTitle = document.Title;
-            string enhancedAuthors = document.Authors;
+            string enhancedAuthors = document.Author;
 
             // Try to enhance metadata from URL if needed
             if (needsEnhancement && !string.IsNullOrWhiteSpace(document.SourceUrl))
@@ -531,7 +531,7 @@ Provide professional, citation-ready metadata that follows academic standards.";
                         }
 
                         // Use enhanced authors if original is missing
-                        if (string.IsNullOrWhiteSpace(document.Authors) && string.IsNullOrWhiteSpace(document.Author))
+                        if (string.IsNullOrWhiteSpace(document.Author) && string.IsNullOrWhiteSpace(document.Authors))
                         {
                             enhancedAuthors = !string.IsNullOrWhiteSpace(enhancedMetadata.Authors) ? enhancedMetadata.Authors : GetSmartAuthorFromUrl(document.SourceUrl);
                         }
@@ -554,7 +554,9 @@ Provide professional, citation-ready metadata that follows academic standards.";
                          ? enhancedAuthors 
                          : (!string.IsNullOrWhiteSpace(document.Author) 
                             ? document.Author 
-                            : GetSmartAuthorFromUrl(document.SourceUrl));
+                            : (!string.IsNullOrWhiteSpace(document.Authors) 
+                               ? document.Authors 
+                               : GetSmartAuthorFromUrl(document.SourceUrl)));
             
             // --- ENHANCED DATE EXTRACTION ---
             int? year = document.Year;
@@ -1230,7 +1232,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                     return new EnhancedCitationData
                     {
                         Title = document.Title ?? "Unknown Title",
-                        Authors = document.Authors ?? document.Author ?? "",
+                        Authors = document.Author ?? document.Authors ?? "",
                         Year = document.Year,
                         PublicationDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
                         Type = document.DocumentType.ToString(),
@@ -1246,7 +1248,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                 var (aiAuthor, aiYear, aiPublisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(aiPrompt);
 
                 // Use AI data only for missing fields, keep existing data for complete fields
-                var finalAuthor = document.Authors ?? document.Author;
+                var finalAuthor = document.Author ?? document.Authors;
                 if (string.IsNullOrWhiteSpace(finalAuthor) && !string.IsNullOrWhiteSpace(aiAuthor))
                 {
                     finalAuthor = aiAuthor;
@@ -1285,7 +1287,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                 return new EnhancedCitationData
                 {
                     Title = document.Title ?? "Unknown Title",
-                    Authors = document.Authors ?? document.Author ?? "Unknown Author",
+                    Authors = document.Author ?? document.Authors ?? "Unknown Author",
                     Year = document.Year ?? DateTime.UtcNow.Year,
                     PublicationDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
                     Type = document.DocumentType.ToString(),
