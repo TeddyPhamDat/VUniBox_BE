@@ -51,6 +51,12 @@ namespace VUniBox.Services.DocumentManagement
         {
             try
             {
+                Console.WriteLine($"[DocumentLifecycleService] Saving document with metadata:");
+                Console.WriteLine($"  - Title: '{metadata.Title}'");
+                Console.WriteLine($"  - Author: '{metadata.Author}'");
+                Console.WriteLine($"  - Authors: '{metadata.Authors}'");
+                Console.WriteLine($"  - Publisher: '{metadata.Publisher}'");
+                
                 // Tạo document record
                 var document = new Documents
                 {

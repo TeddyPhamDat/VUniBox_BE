@@ -59,13 +59,19 @@ namespace VUniBox.Services.Metadata
                 using var reader = new PdfReader(filePath);
                 var info = reader.Info;
 
+                Console.WriteLine($"[FileMetadataExtractor] Extracting from PDF: {filePath}");
+                
                 // Extract basic metadata from PDF properties - don't use filename as title fallback
                 var pdfTitle = GetPdfProperty(info, "Title");
+                Console.WriteLine($"[FileMetadataExtractor] PDF Title property: '{pdfTitle}'");
+                
                 if (!string.IsNullOrEmpty(pdfTitle) && IsValidTitle(pdfTitle))
                 {
                     metadata.Title = CleanTitleText(pdfTitle);
+                    Console.WriteLine($"[FileMetadataExtractor] Set title from PDF properties: '{metadata.Title}'");
                 }
                 metadata.Author = GetPdfProperty(info, "Author") ?? "";
+                Console.WriteLine($"[FileMetadataExtractor] PDF Author property: '{metadata.Author}'");
                 metadata.Subject = GetPdfProperty(info, "Subject") ?? "";
                 metadata.Keywords = GetPdfProperty(info, "Keywords") ?? "";
 
@@ -98,14 +104,19 @@ namespace VUniBox.Services.Metadata
                 try
                 {
                     var fullText = await ExtractPdfTextAsync(reader);
+                    Console.WriteLine($"[FileMetadataExtractor] Extracted text length: {fullText?.Length ?? 0}");
                     
                     if (!string.IsNullOrEmpty(fullText))
                     {
                         // Fix encoding before extracting metadata
                         fullText = FixVietnameseEncoding(fullText);
                         
+                        Console.WriteLine($"[FileMetadataExtractor] Before text extraction - Title: '{metadata.Title}', Publisher: '{metadata.Publisher}'");
+                        
                         // Extract metadata from text content
                         ExtractMetadataFromText(metadata, fullText);
+                        
+                        Console.WriteLine($"[FileMetadataExtractor] After text extraction - Title: '{metadata.Title}', Publisher: '{metadata.Publisher}'");
                     }
                 }
                 catch (Exception ex)

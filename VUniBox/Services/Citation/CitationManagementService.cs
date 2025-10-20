@@ -34,6 +34,12 @@ namespace VUniBox.Services.Citation
         {
             try
             {
+                Console.WriteLine($"[CitationManagementService] GenerateQuickCitationAsync called");
+                Console.WriteLine($"  - Document.Title: '{document.Title}'");
+                Console.WriteLine($"  - Document.Author: '{document.Author}'");
+                Console.WriteLine($"  - Document.Authors: '{document.Authors}'");
+                Console.WriteLine($"  - Document.Publisher: '{document.Publisher}'");
+                
                 // Use existing document data directly - SUPER FAST, NO EXTRACTION
                 var title = document.Title ?? "Unknown Title";
                 var authors = document.Author ?? document.Authors ?? "Unknown Author";
@@ -41,6 +47,11 @@ namespace VUniBox.Services.Citation
                 var pubDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "";
                 var docType = document.DocumentType.ToString();
                 var url = document.SourceUrl ?? "";
+                
+                Console.WriteLine($"[CitationManagementService] Using for citation:");
+                Console.WriteLine($"  - title: '{title}'");
+                Console.WriteLine($"  - authors: '{authors}'");
+                Console.WriteLine($"  - url: '{url}'");
                 
                 // Generate citation using deterministic service
                 var (formatted, inText) = await _geminiCitationService.GenerateCitationAsync(
@@ -73,10 +84,11 @@ namespace VUniBox.Services.Citation
                 var aiPrompt = BuildComprehensiveMetadataPrompt(document.Title, document.SourceUrl, document.Author, document.Authors);
                 
                 // Use AI to extract Author, Year, Title, Publisher
-                var (aiAuthor, aiYear, aiPublisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(aiPrompt);
+                var (aiTitle, aiAuthor, aiYear, aiPublisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(aiPrompt);
 
                 // Use extracted data or fallback to existing data
-                var finalTitle = !string.IsNullOrWhiteSpace(document.Title) ? document.Title : "Untitled Document";
+                var finalTitle = !string.IsNullOrWhiteSpace(aiTitle) ? aiTitle : 
+                               (!string.IsNullOrWhiteSpace(document.Title) ? document.Title : "Untitled Document");
                 var finalAuthor = !string.IsNullOrWhiteSpace(aiAuthor) ? aiAuthor : 
                                 (!string.IsNullOrWhiteSpace(document.Author) ? document.Author : 
                                 (!string.IsNullOrWhiteSpace(document.Authors) ? document.Authors : "Unknown Author"));
@@ -130,20 +142,26 @@ Source URL: {sourceUrl}
 Domain: {domain}
 Existing Author Data: {existingAuthor}
 
-**Required Output (JSON format):**
+**Required Output:**
 Please analyze and extract:
 
-1. **Author** - Extract or infer author name(s):
+1. **Title** - Complete document title:
+   - Use existing title if available and meaningful
+   - If title is missing or unclear, create a descriptive title based on content or URL
+   - For academic papers: ""Research on [Topic]"" or ""Study of [Subject]""
+   - Avoid generic titles like ""Untitled"" or ""Document""
+
+2. **Author** - Extract or infer author name(s):
    - Look for patterns in title like ""by John Smith"", ""Smith et al."", ""John Doe and Jane Smith""
    - Use existing author data if available and reliable
    - For academic sources (ResearchGate, ArXiv, .edu): suggest ""[Platform] Researcher"" or ""Academic Research Team""
    - For commercial sources: suggest appropriate professional names
 
-2. **Year** - Publication or access year:
+3. **Year** - Publication or access year:
    - Extract from title if mentioned (""Study 2023"", ""2024 Analysis"")
    - If not found, use current year: {DateTime.UtcNow.Year}
 
-3. **Publisher** - Publishing entity:
+4. **Publisher** - Publishing entity:
    - For ResearchGate: ""ResearchGate""
    - For ScienceDirect: ""Elsevier""
    - For ArXiv: ""ArXiv""
@@ -151,16 +169,17 @@ Please analyze and extract:
    - For other domains: extract from domain name or use ""Online Publisher""
 
 **Response Format:**
-{{
-  ""author"": ""Properly formatted author name(s)"",
-  ""year"": {DateTime.UtcNow.Year},
-  ""publisher"": ""Publisher name""
-}}
+Title: [Complete descriptive title]
+Author: [Properly formatted author name(s)]
+Year: {DateTime.UtcNow.Year}
+Publisher: [Publisher name]
 
 **Examples:**
-- ResearchGate paper: {{""author"": ""ResearchGate Researcher"", ""year"": 2024, ""publisher"": ""ResearchGate""}}
-- Academic paper with clear author: {{""author"": ""Smith, J. et al."", ""year"": 2023, ""publisher"": ""Academic Press""}}
-- ScienceDirect article: {{""author"": ""Research Team"", ""year"": 2024, ""publisher"": ""Elsevier""}}
+- ResearchGate paper: 
+  Title: The Theory of Planned Behavior
+  Author: Icek Ajzen
+  Year: 1991
+  Publisher: ResearchGate
 
 Provide professional, citation-ready metadata that follows academic standards.";
         }
@@ -176,7 +195,8 @@ Provide professional, citation-ready metadata that follows academic standards.";
                     return null;
                 }
 
-                Console.WriteLine($"[CitationManagementService] Found document: ID={document.DocumentId}, Title={document.Title}");
+                Console.WriteLine($"[CitationManagementService] Found document: ID={document.DocumentId}, Title='{document.Title}'");
+                Console.WriteLine($"[CitationManagementService] Document metadata: Author='{document.Author}', Authors='{document.Authors}', Publisher='{document.Publisher}', Year={document.Year}");
 
                 // Check if citation already exists for this document
                 var existingCitation = await _context.Citations
@@ -1036,7 +1056,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                     {
                         try
                         {
-                            var (author, year, publisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(citation.Document.Title);
+                            var (title, author, year, publisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(citation.Document.Title);
                             if (!string.IsNullOrWhiteSpace(author))
                             {
                                 authorName = author;
@@ -1245,24 +1265,41 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                 Console.WriteLine($"[CitationManagementService] Missing metadata - Author: {missingAuthor}, Publisher: {missingPublisher}, Year: {missingYear}. Using AI enhancement...");
                 
                 var aiPrompt = BuildSmartEnhancementPrompt(document);
-                var (aiAuthor, aiYear, aiPublisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(aiPrompt);
+                var (aiTitle, aiAuthor, aiYear, aiPublisher) = await _geminiCitationService.ExtractCitationMetadataWithAIAsync(aiPrompt);
+
+                // Check if we need title enhancement too
+                bool missingTitle = string.IsNullOrWhiteSpace(document.Title) || document.Title.Trim() == "";
 
                 // Use AI data only for missing fields, keep existing data for complete fields
+                var finalTitle = document.Title;
+                if ((missingTitle || string.IsNullOrWhiteSpace(finalTitle)) && !string.IsNullOrWhiteSpace(aiTitle))
+                {
+                    finalTitle = aiTitle;
+                    Console.WriteLine($"[CitationManagementService] AI extracted title: {aiTitle} (replacing '{document.Title}')");
+                }
+
                 var finalAuthor = document.Author ?? document.Authors;
-                if (string.IsNullOrWhiteSpace(finalAuthor) && !string.IsNullOrWhiteSpace(aiAuthor))
+                if ((missingAuthor || string.IsNullOrWhiteSpace(finalAuthor) || 
+                     finalAuthor.Contains("In J.") || finalAuthor.Contains("Unable to")) && 
+                    !string.IsNullOrWhiteSpace(aiAuthor))
                 {
                     finalAuthor = aiAuthor;
-                    Console.WriteLine($"[CitationManagementService] AI extracted author: {aiAuthor}");
+                    Console.WriteLine($"[CitationManagementService] AI extracted author: {aiAuthor} (replacing '{document.Author ?? document.Authors}')");
                 }
 
                 var finalPublisher = document.Publisher;
-                if (string.IsNullOrWhiteSpace(finalPublisher) && !string.IsNullOrWhiteSpace(aiPublisher))
+                if ((missingPublisher || string.IsNullOrWhiteSpace(finalPublisher)) && 
+                    !string.IsNullOrWhiteSpace(aiPublisher))
                 {
                     finalPublisher = aiPublisher;
                     Console.WriteLine($"[CitationManagementService] AI extracted publisher: {aiPublisher}");
                 }
 
                 var finalYear = document.Year ?? aiYear;
+                if (missingYear && aiYear.HasValue)
+                {
+                    Console.WriteLine($"[CitationManagementService] AI extracted year: {aiYear}");
+                }
                 if (finalYear.HasValue)
                 {
                     Console.WriteLine($"[CitationManagementService] Using year: {finalYear}");
@@ -1270,7 +1307,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
 
                 return new EnhancedCitationData
                 {
-                    Title = document.Title ?? "Unknown Title",
+                    Title = finalTitle ?? "Unknown Title",
                     Authors = finalAuthor ?? "Unknown Author",
                     Year = finalYear ?? DateTime.UtcNow.Year,
                     PublicationDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
@@ -1327,6 +1364,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                 prompt += $"Description: {document.Description}\n";
 
             prompt += "\nBased on the available information, intelligently extract:\n";
+            prompt += "Title: [Complete document title - clear and descriptive]\n";
             prompt += "Author: [Full author name(s) - NEVER use 'Unknown Author' or 'Unable to determine']\n";
             prompt += "Year: [Publication year - extract from URL, title, or content]\n";
             prompt += "Publisher: [Publisher name - ResearchGate, arXiv, IEEE, etc.]\n";

@@ -481,7 +481,7 @@ namespace VUniBox.Services.Citation
             return "Research Author";
         }
 
-        public async Task<(string author, int? year, string publisher)> ExtractCitationMetadataWithAIAsync(string prompt)
+        public async Task<(string title, string author, int? year, string publisher)> ExtractCitationMetadataWithAIAsync(string prompt)
         {
             try
             {
@@ -539,13 +539,25 @@ namespace VUniBox.Services.Citation
             }
         }
 
-        private (string author, int? year, string publisher) ExtractMetadataFallback(string prompt)
+        private (string title, string author, int? year, string publisher) ExtractMetadataFallback(string prompt)
         {
+            var title = "Unknown Title";
             var author = "Research Author";
             var year = DateTime.UtcNow.Year;
             var publisher = "Academic Publisher";
 
             Console.WriteLine($"[GeminiCitationService] Using fallback metadata extraction for: {prompt.Substring(0, Math.Min(100, prompt.Length))}...");
+
+            // Try to extract title from prompt
+            if (prompt.Contains("Title:", StringComparison.OrdinalIgnoreCase))
+            {
+                var titleMatch = System.Text.RegularExpressions.Regex.Match(prompt, @"Title:\s*""?([^""\n]+)""?", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (titleMatch.Success && !string.IsNullOrWhiteSpace(titleMatch.Groups[1].Value))
+                {
+                    title = titleMatch.Groups[1].Value.Trim();
+                    Console.WriteLine($"[GeminiCitationService] Extracted title: {title}");
+                }
+            }
 
             // Try to extract author from title patterns
             if (prompt.Contains("Title:", StringComparison.OrdinalIgnoreCase))
@@ -553,9 +565,9 @@ namespace VUniBox.Services.Citation
                 var titleMatch = System.Text.RegularExpressions.Regex.Match(prompt, @"Title:\s*(.+?)(?:\n|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (titleMatch.Success)
                 {
-                    var title = titleMatch.Groups[1].Value.Trim();
+                    var titleText = titleMatch.Groups[1].Value.Trim();
                     // Try to extract author from common title patterns like "Author Name - Title" or "Title by Author Name"
-                    var byAuthorMatch = System.Text.RegularExpressions.Regex.Match(title, @"by\s+([A-Za-z\s\.]+)(?:\s|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var byAuthorMatch = System.Text.RegularExpressions.Regex.Match(titleText, @"by\s+([A-Za-z\s\.]+)(?:\s|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (byAuthorMatch.Success)
                     {
                         author = byAuthorMatch.Groups[1].Value.Trim();
@@ -604,16 +616,25 @@ namespace VUniBox.Services.Citation
                 if (author == "Research Author") author = "IEEE Author";
             }
 
-            return (author, year, publisher);
+            return (title, author, year, publisher);
         }
 
-        private (string author, int? year, string publisher) ParseMetadataFromText(string text)
+        private (string title, string author, int? year, string publisher) ParseMetadataFromText(string text)
         {
+            var title = "Unknown Title";
             var author = "Research Author";
             int? year = DateTime.UtcNow.Year;
             var publisher = "Unknown Publisher";
 
             Console.WriteLine($"[GeminiCitationService] Parsing AI response: {text}");
+
+            // Parse title
+            var titleMatch = System.Text.RegularExpressions.Regex.Match(text, @"Title:\s*(.+?)(?:\n|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (titleMatch.Success && !string.IsNullOrWhiteSpace(titleMatch.Groups[1].Value))
+            {
+                title = titleMatch.Groups[1].Value.Trim();
+                Console.WriteLine($"[GeminiCitationService] Extracted title: {title}");
+            }
 
             // Parse author
             var authorMatch = System.Text.RegularExpressions.Regex.Match(text, @"Author:\s*(.+?)(?:\n|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -666,7 +687,7 @@ namespace VUniBox.Services.Citation
                 }
             }
 
-            return (author, year, publisher);
+            return (title, author, year, publisher);
         }
 
         private class CitationMetadata
