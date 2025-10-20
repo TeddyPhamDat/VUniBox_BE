@@ -59,8 +59,12 @@ namespace VUniBox.Services.Metadata
                 using var reader = new PdfReader(filePath);
                 var info = reader.Info;
 
-                // Extract basic metadata from PDF properties
-                metadata.Title = GetPdfProperty(info, "Title") ?? Path.GetFileNameWithoutExtension(filePath);
+                // Extract basic metadata from PDF properties - don't use filename as title fallback
+                var pdfTitle = GetPdfProperty(info, "Title");
+                if (!string.IsNullOrEmpty(pdfTitle) && IsValidTitle(pdfTitle))
+                {
+                    metadata.Title = CleanTitleText(pdfTitle);
+                }
                 metadata.Author = GetPdfProperty(info, "Author") ?? "";
                 metadata.Subject = GetPdfProperty(info, "Subject") ?? "";
                 metadata.Keywords = GetPdfProperty(info, "Keywords") ?? "";
@@ -112,7 +116,7 @@ namespace VUniBox.Services.Metadata
             }
             catch (Exception ex)
             {
-                metadata.Title = Path.GetFileNameWithoutExtension(filePath);
+                
                 metadata.Description = $"Error extracting PDF metadata: {ex.Message}";
             }
 
@@ -181,122 +185,360 @@ namespace VUniBox.Services.Metadata
         /// <param name="text">The full text content of the document.</param>
         private void ExtractMetadataFromText(Models.DTO.DocumentMetadataDto metadata, string text)
         {
-            // Extract DOI
-            var doiMatch = Regex.Match(text, @"(?:DOI:?\s*)?10\.\d{4,}/[^\s<>""'\]\)]+", RegexOptions.IgnoreCase);
-            if (doiMatch.Success)
-            {
-                metadata.DOI = doiMatch.Value.Replace("DOI:", "").Trim();
-            }
+            // Clean text first for better parsing
+            var cleanText = text.Replace("\n", " ").Replace("\r", " ");
+            cleanText = Regex.Replace(cleanText, @"\s+", " ");
 
-            // Extract journal name (look for patterns like "Journal of...", "IEEE...", etc.)
-            var journalPatterns = new[]
+            // Extract DOI with more precise patterns
+            var doiPatterns = new[]
             {
-                @"(?:published in|appears in|from)\s+([A-Z][^.]+(?:Journal|Transactions|Proceedings|Review|Letters)[^.]*)",
-                @"(IEEE\s+[^.]+)",
-                @"(ACM\s+[^.]+)",
-                @"([A-Z][^.]*Journal[^.]*)",
-                @"([A-Z][^.]*Proceedings[^.]*)"
+                @"DOI:\s*(10\.\d{4,}/[^\s<>""'\]\)]+)",
+                @"doi:\s*(10\.\d{4,}/[^\s<>""'\]\)]+)",
+                @"https?://doi\.org/(10\.\d{4,}/[^\s<>""'\]\)]+)",
+                @"\b(10\.\d{4,}/[^\s<>""'\]\)]{6,})\b"
             };
 
-            foreach (var pattern in journalPatterns)
+            foreach (var pattern in doiPatterns)
             {
-                var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
-                if (match.Success && string.IsNullOrEmpty(metadata.Journal))
+                var doiMatch = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                if (doiMatch.Success && string.IsNullOrEmpty(metadata.DOI))
                 {
-                    metadata.Journal = match.Groups[1].Value.Trim();
+                    metadata.DOI = doiMatch.Groups[1].Value.Trim();
                     break;
                 }
-            }
+            
+        }
 
-            // Extract volume, issue, pages
-            var volumeMatch = Regex.Match(text, @"(?:Vol\.?\s*|Volume\s+)(\d+)", RegexOptions.IgnoreCase);
-            if (volumeMatch.Success)
+            // Extract academic journal names with improved patterns
+            if (string.IsNullOrEmpty(metadata.Journal))
             {
-                metadata.Volume = volumeMatch.Groups[1].Value;
-            }
-
-            var issueMatch = Regex.Match(text, @"(?:No\.?\s*|Issue\s+|Number\s+)(\d+)", RegexOptions.IgnoreCase);
-            if (issueMatch.Success)
-            {
-                metadata.Issue = issueMatch.Groups[1].Value;
-            }
-
-            var pagesMatch = Regex.Match(text, @"(?:pp\.?\s*|pages?\s*)(\d+)(?:\s*[-��]\s*(\d+))?", RegexOptions.IgnoreCase);
-            if (pagesMatch.Success)
-            {
-                metadata.Pages = pagesMatch.Groups[2].Success 
-                    ? $"{pagesMatch.Groups[1].Value}-{pagesMatch.Groups[2].Value}"
-                    : pagesMatch.Groups[1].Value;
-            }
-
-            // Extract publication year from text if not found in properties
-            if (!metadata.PublicationDate.HasValue)
-            {
-                var yearMatch = Regex.Match(text, @"\b(19|20)\d{2}\b");
-                if (yearMatch.Success && int.TryParse(yearMatch.Value, out var year))
+                var journalPatterns = new[]
                 {
-                    metadata.PublicationDate = new DateOnly(year, 1, 1);
+                    @"Journal of ([^,.\n]+)",
+                    @"([^,.\n]*Journal[^,.\n]*?)(?:,|\.|$)",
+                    @"((?:American|European|International|British)\s+[^,.\n]*(?:Journal|Review|Quarterly|Studies)[^,.\n]*?)(?:,|\.|$)",
+                    @"([A-Z][^,.\n]*(?:Psychology|Education|Science|Research|Studies)[^,.\n]*?)(?:,|\.|$)"
+                };
+
+                foreach (var pattern in journalPatterns)
+                {
+                    var match = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        var journal = match.Groups[1].Value.Trim();
+                        if (journal.Length > 5 && journal.Length < 100 && !journal.Contains("Copyright"))
+                        {
+                            metadata.Journal = journal;
+                            break;
+                        }
+                    }
                 }
             }
 
-            // Extract publisher
-            if (string.IsNullOrEmpty(metadata.Publisher))
+            // Extract volume with better accuracy
+            if (string.IsNullOrEmpty(metadata.Volume))
             {
-                var publisherPatterns = new[]
+                var volumePatterns = new[]
                 {
+                    @"(?:Vol\.?\s*|Volume\s+)(\d+)",
+                    @"\b(\d{1,3})\s*,\s*\d{1,4}(?:-\d{1,4})?\s*$", // Pattern: "95, 179-187"
+                    @"Volume\s+(\d+)\s+Number",
+                    @",\s*(\d{1,3})\s*,\s*\d"
+                };
+
+                foreach (var pattern in volumePatterns)
+                {
+                    var match = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        var volume = match.Groups[1].Value;
+                        if (int.TryParse(volume, out var vol) && vol > 0 && vol < 1000)
+                        {
+                            metadata.Volume = volume;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Extract issue number with improved patterns
+            if (string.IsNullOrEmpty(metadata.Issue))
+            {
+                var issuePatterns = new[]
+                {
+                    @"(?:No\.?\s*|Issue\s+|Number\s+)(\d+)",
+                    @"Volume\s+\d+\s+Number\s+(\d+)",
+                    @"\(\d+\)\s*,\s*(\d+)",
+                    @",\s*No\.\s*(\d+)"
+                };
+
+                foreach (var pattern in issuePatterns)
+                {
+                    var match = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        var issue = match.Groups[1].Value;
+                        if (int.TryParse(issue, out var iss) && iss > 0 && iss < 100)
+                        {
+                            metadata.Issue = issue;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Extract pages with enhanced patterns
+            if (string.IsNullOrEmpty(metadata.Pages))
+            {
+                var pagePatterns = new[]
+                {
+                    @"(?:pp\.?\s*|pages?\s*)(\d+)(?:\s*[-–]\s*(\d+))?",
+                    @"\b(\d{1,4})\s*[-–]\s*(\d{1,4})\b",
+                    @",\s*(\d{2,4})(?:\s*[-–]\s*(\d{2,4}))?\s*$",
+                    @"pages?\s+(\d+)(?:\s*[-–]\s*(\d+))?"
+                };
+
+                foreach (var pattern in pagePatterns)
+                {
+                    var match = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        var startPage = match.Groups[1].Value;
+                        var endPage = match.Groups[2].Success ? match.Groups[2].Value : "";
+
+                        if (int.TryParse(startPage, out var start) && start > 0)
+                        {
+                            if (!string.IsNullOrEmpty(endPage) && int.TryParse(endPage, out var end) && end > start)
+                            {
+                                metadata.Pages = $"{startPage}-{endPage}";
+                            }
+                            else
+                            {
+                                metadata.Pages = startPage;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Extract publication year with better accuracy
+            if (!metadata.PublicationDate.HasValue)
+            {
+                var yearPatterns = new[]
+                 {
+                    @"Copyright\s+(19|20)\d{2}",
+                    @"\b(19|20)\d{2}\b(?:\s+by)",
+                    @"(?:Published|Copyright)\s+(?:in\s+)?(19|20)\d{2}",
+                    @"\b(19|20)\d{2}\b"
+                };
+
+                foreach (var pattern in yearPatterns)
+                {
+                    var yearMatch = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                    if (yearMatch.Success && int.TryParse(yearMatch.Value.Substring(yearMatch.Value.Length - 4), out var year))
+                    {
+                        if (year >= 1900 && year <= DateTime.Now.Year)
+                        {
+                            metadata.PublicationDate = new DateOnly(year, 1, 1);
+                            break;
+                        }
+                    }
+                }
+            }
+
+                // Extract publisher with enhanced patterns
+                if (string.IsNullOrEmpty(metadata.Publisher))
+                {
+                    var publisherPatterns = new[]
+                    {
+                    @"Copyright\s+\d{4}\s+by\s+(.+?)(?:\.|,|$)",
                     @"(?:Published by|Publisher:)\s*([^.\n]+)",
-                    @"(Springer|Elsevier|IEEE|ACM|Nature|Science|Wiley)[^.\n]*",
+                    @"(American Psychological Association)",
+                    @"(Springer|Elsevier|IEEE|ACM|Nature|Science|Wiley|Cambridge|Oxford)[^.\n]*",
                     @"([A-Z][^.]*Press[^.]*)",
                     @"([A-Z][^.]*Publications?[^.]*)"
                 };
 
-                foreach (var pattern in publisherPatterns)
-                {
-                    var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
-                    if (match.Success)
+                    foreach (var pattern in publisherPatterns)
                     {
-                        metadata.Publisher = match.Groups[1].Value.Trim();
-                        break;
+                        var match = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                        if (match.Success)
+                        {
+                            var publisher = match.Groups[1].Value.Trim();
+                            if (publisher.Length > 3 && publisher.Length < 100)
+                            {
+                                metadata.Publisher = publisher;
+                                break;
+                            }
+                        }
                     }
                 }
-            }
 
-            // Extract authors (look for multiple author patterns)
-            if (string.IsNullOrEmpty(metadata.Authors))
-            {
-                var authorPatterns = new[]
+                // Extract authors with improved accuracy
+                if (string.IsNullOrEmpty(metadata.Authors))
                 {
+                    var authorPatterns = new[]
+                    {
+                     @"([A-Z][a-z]+\s+[A-Z]\.\s+[A-Z][a-z]+)", // Christopher A. Wolters
+                    @"([A-Z][a-z]+,\s+[A-Z]\.\s*[A-Z]\.)", // Smith, J. A.
                     @"(?:Authors?:?\s*)([A-Z][^.\n]+(?:,\s*[A-Z][^.\n]+)*)",
-                    @"(?:By:?\s*)([A-Z][^.\n]+(?:,\s*[A-Z][^.\n]+)*)"
+                     @"(?:By:?\s*)([A-Z][^.\n]+(?:,\s*[A-Z][^.\n]+)*)",
+                    @"^([A-Z][a-z]+\s+[A-Z][a-z]+)" // First line author
                 };
 
-                foreach (var pattern in authorPatterns)
-                {
-                    var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
-                    if (match.Success)
+                    foreach (var pattern in authorPatterns)
                     {
-                        var authors = match.Groups[1].Value.Trim();
-                        metadata.Authors = authors;
-                        if (string.IsNullOrEmpty(metadata.Author))
+                        var match = Regex.Match(cleanText, pattern, RegexOptions.IgnoreCase);
+                        if (match.Success)
                         {
-                            metadata.Author = authors.Split(',')[0].Trim();
+                            var authors = match.Groups[1].Value.Trim();
+                            if (authors.Length > 3 && authors.Length < 200 && !authors.Contains("Copyright"))
+                            {
+                                metadata.Authors = authors;
+                                if (string.IsNullOrEmpty(metadata.Author))
+                                {
+                                    metadata.Author = authors.Split(',')[0].Trim();
+                                }
+                                break;
+                            }
                         }
-                        break;
                     }
                 }
-            }
 
-            // Extract abstract
-            if (string.IsNullOrEmpty(metadata.Abstract))
-            {
-                metadata.Abstract = ExtractAbstractFromText(text);
-            }
+                // Extract title if not already set
+                if (string.IsNullOrEmpty(metadata.Title) || metadata.Title.Contains("temp"))
+                {
+                    var titlePatterns = new[]
+                    {
+                    // Academic paper title patterns - most specific first
+                    @"(?i)(?:title[:\s]*)?([A-Z][^.\n\r]{20,200}?)(?=\s*\n\s*[A-Z][a-z]+\s+[A-Z]\.?\s*[A-Z][a-z]+)",
+                    @"(?i)([A-Z][^.\n\r]{15,150}?)(?=\s*\n\s*(?:Abstract|Tóm tắt|Introduction|ABSTRACT))",
+                    @"^([A-Z][A-Za-z\s\-:,]{20,200}?)(?=\n\s*[A-Z][a-z]+\s+[A-Z]\.)",
+                    // Look for title before author patterns
+                    @"([A-Z][A-Za-z\s\-:,?]{15,200}?)(?=\s*\n\s*(?:[A-Z][a-z]+\s+[A-Z]\.\s*[A-Z][a-z]+|Department|University))",
+                    // Vietnamese title patterns
+                    @"(?i)(?:tiêu đề[:\s]*)?([A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ][^.\n\r]{15,200}?)(?=\s*\n)",
+                    // More specific academic patterns
+                    @"^(?!Copyright|Journal|Copyright\s+\d{4})([A-Z][A-Za-z\s\-:,?]{20,200}?)(?=\s*\n(?:[A-Z][a-z]+\s+[A-Z]\.|Abstract|Introduction))",
+                    // Study-related patterns
+                    @"Understanding\s+([^.\n]+)", // "Understanding Procrastination"
+                    @"([A-Z][^.\n]*(?:Perspective|Analysis|Study|Research)[^.\n]*)",
+                    // Last resort - first meaningful line
+                    @"^(?!Copyright|Journal|Page|\d+)([A-Z][A-Za-z\s\-:,]{10,150}?)(?=\n|$)"
+                };
 
-            // Set language
-            if (string.IsNullOrEmpty(metadata.Language))
-            {
-                metadata.Language = "en"; // Default to English for academic papers
-            }
+                    foreach (var pattern in titlePatterns)
+                    {
+                    var titleMatch = Regex.Match(cleanText, pattern, RegexOptions.Multiline);
+                    if (titleMatch.Success)
+                    {
+                        var title = titleMatch.Groups[1].Value.Trim();
+
+                        // Clean and validate title
+                        title = CleanTitleText(title);
+
+                        if (IsValidTitle(title))
+                        {
+                            metadata.Title = CleanAndLimitText(title, 200);
+                            break;
+                        }
+                    }
+                }
+
+                // If still no title found, try to extract from first few meaningful lines
+                if (string.IsNullOrEmpty(metadata.Title))
+                {
+                    var lines = cleanText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var line in lines.Take(10))
+                    {
+                        var cleanLine = line.Trim();
+                        if (cleanLine.Length > 15 && cleanLine.Length < 200 &&
+                            !IsHeaderOrPageNumber(cleanLine) &&
+                            !cleanLine.StartsWith("Copyright", StringComparison.OrdinalIgnoreCase) &&
+                            !cleanLine.Contains("Journal of") &&
+                            char.IsUpper(cleanLine[0]))
+                        {
+                            metadata.Title = CleanAndLimitText(cleanLine, 200);
+                            break;
+                        }
+                        }
+                    }
+                }
+
+                // Extract abstract
+                if (string.IsNullOrEmpty(metadata.Abstract))
+                {
+                    metadata.Abstract = ExtractAbstractFromText(text);
+                }
+
+                // Set language
+                if (string.IsNullOrEmpty(metadata.Language))
+                {
+                    metadata.Language = DetectLanguage(cleanText);
+                }
+            
+        }
+
+
+        /// <summary>
+        /// Cleans title text by removing unwanted patterns
+        /// </summary>
+        /// <param name="title">Raw title text</param>
+        /// <returns>Cleaned title text</returns>
+        private string CleanTitleText(string title)
+        {
+            if (string.IsNullOrEmpty(title))
+                return title;
+
+            // Remove common unwanted patterns
+            title = Regex.Replace(title, @"Copyright\s+\d{4}.*?by.*?\.", "", RegexOptions.IgnoreCase);
+            title = Regex.Replace(title, @"Journal\s+of\s+.*?Psychology", "", RegexOptions.IgnoreCase);
+            title = Regex.Replace(title, @"\d{4}-\d{4}", ""); // Remove ISSN
+            title = Regex.Replace(title, @"\$\d+\.\d+", ""); // Remove price
+            title = Regex.Replace(title, @"^\d+\s*", ""); // Remove leading numbers
+            title = Regex.Replace(title, @"Vol\.\s*\d+", "", RegexOptions.IgnoreCase); // Remove volume info
+            title = Regex.Replace(title, @"pp\.\s*\d+", "", RegexOptions.IgnoreCase); // Remove page info
+            title = Regex.Replace(title, @"\s+", " "); // Normalize whitespace
+
+            return title.Trim();
+        }
+
+        /// <summary>
+        /// Validates if the extracted text is a good title
+        /// </summary>
+        /// <param name="title">Title to validate</param>
+        /// <returns>True if title appears to be valid</returns>
+        private bool IsValidTitle(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title) || title.Length < 10 || title.Length > 200)
+                return false;
+
+            // Should not contain these patterns
+            var lowerTitle = title.ToLower();
+            if (lowerTitle.Contains("copyright") ||
+                lowerTitle.Contains("journal of") ||
+                lowerTitle.Contains("0022-0663") ||
+                lowerTitle.Contains("$12.") ||
+                lowerTitle.StartsWith("page ") ||
+                Regex.IsMatch(title, @"^\d+\s*$"))
+                return false;
+
+            // Should not be all uppercase (likely header)
+            if (title == title.ToUpper() && title.Length < 50)
+                return false;
+
+            // Should not be filename-like
+            if (title.Contains("temp") || title.Contains(".pdf") || title.Contains(".doc"))
+                return false;
+
+            // Should start with capital letter
+            if (!char.IsUpper(title[0]))
+                return false;
+
+            // Should contain meaningful words (not just numbers/symbols)
+            var wordCount = title.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            return wordCount >= 3; // At least 3 words for a meaningful title
         }
 
         /// <summary>
@@ -348,11 +590,11 @@ namespace VUniBox.Services.Metadata
                     }
                 }
 
-                // Fallback to filename if no title found
-                if (string.IsNullOrEmpty(metadata.Title))
-                {
-                    metadata.Title = Path.GetFileNameWithoutExtension(filePath);
-                }
+                //// Fallback to filename if no title found
+                //if (string.IsNullOrEmpty(metadata.Title))
+                //{
+                //    metadata.Title = Path.GetFileNameWithoutExtension(filePath);
+                //}
 
                 // Get file size
                 var fileInfo = new FileInfo(filePath);
@@ -383,7 +625,7 @@ namespace VUniBox.Services.Metadata
             }
             catch (Exception ex)
             {
-                metadata.Title = Path.GetFileNameWithoutExtension(filePath);
+                //metadata.Title = Path.GetFileNameWithoutExtension(filePath);
                 metadata.Description = $"Error extracting Word metadata: {ex.Message}";
             }
 
@@ -408,13 +650,22 @@ namespace VUniBox.Services.Metadata
                 var content = await File.ReadAllTextAsync(filePath);
                 var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
                 
-                metadata.Title = Path.GetFileNameWithoutExtension(filePath);
+                
                 metadata.Abstract = ExtractAbstractFromText(content);
                 
                 // Try to extract basic information from first few lines
                 if (lines.Length > 0)
                 {
-                    metadata.Title = lines[0].Trim();
+                    // Try to get title from first meaningful line
+                    var firstMeaningfulLine = lines.FirstOrDefault(line =>
+                        line.Trim().Length > 10 &&
+                        !IsHeaderOrPageNumber(line.Trim()) &&
+                        char.IsUpper(line.Trim()[0]));
+
+                    if (!string.IsNullOrEmpty(firstMeaningfulLine) && IsValidTitle(firstMeaningfulLine.Trim()))
+                    {
+                        metadata.Title = CleanTitleText(firstMeaningfulLine.Trim());
+                    }
                 }
                 
                 if (lines.Length > 1)
@@ -428,7 +679,7 @@ namespace VUniBox.Services.Metadata
             }
             catch (Exception ex)
             {
-                metadata.Title = Path.GetFileNameWithoutExtension(filePath);
+                
                 metadata.Description = $"Error extracting text metadata: {ex.Message}";
             }
 
@@ -551,20 +802,31 @@ namespace VUniBox.Services.Metadata
             // Look for abstract section in multiple languages
             var abstractPatterns = new[]
             {
-                @"(?i)abstract[:\s]*(.+?)(?=\n\s*\n|\n\s*[A-Z][a-z]+:|$)",
-                @"(?i)tóm\s*tắt[:\s]*(.+?)(?=\n\s*\n|\n\s*[A-Z]|$)",
-                @"(?i)tổng\s*quan[:\s]*(.+?)(?=\n\s*\n|\n\s*[A-Z]|$)",
-                @"(?i)giới\s*thiệu[:\s]*(.+?)(?=\n\s*\n|\n\s*[A-Z]|$)"
+                @"(?i)abstract[:\s]*(.{50,500}?)(?=\n\s*\n|\n\s*[A-Z][a-z]+:|keywords|introduction|1\.|$)",
+                @"(?i)tóm\s*tắt[:\s]*(.{50,500}?)(?=\n\s*\n|\n\s*[A-Z]|$)",
+                @"(?i)tổng\s*quan[:\s]*(.{50,500}?)(?=\n\s*\n|\n\s*[A-Z]|$)",
+                @"(?i)giới\s*thiệu[:\s]*(.{50,500}?)(?=\n\s*\n|\n\s*[A-Z]|$)",
+                // Look for content after copyright but before first section
+                @"Copyright\s+\d{4}.*?by.*?\.\s*(.{100,500}?)(?=\n\s*[A-Z][a-z]+:|1\.|Introduction|$)",
+                // Look for meaningful first paragraph after title
+                @"([A-Z][a-z]+.*?(?:research|study|analysis|investigation|understanding).*?\.)"
             };
 
             foreach (var pattern in abstractPatterns)
             {
-                var match = Regex.Match(text, pattern, RegexOptions.Singleline);
+                var match = Regex.Match(text, pattern, RegexOptions.Singleline | RegexOptions.IgnoreCase);
                 if (match.Success)
                 {
                     var abstractText = match.Groups[1].Value.Trim();
-                    abstractText = CleanAndLimitText(abstractText, 300);
-                    return abstractText;
+
+                    // Clean up the abstract
+                    abstractText = CleanAbstractText(abstractText);
+
+                    // Validate abstract quality
+                    if (IsValidAbstract(abstractText))
+                    {
+                        return CleanAndLimitText(abstractText, 400);
+                    }
                 }
             }
 
@@ -575,15 +837,66 @@ namespace VUniBox.Services.Metadata
             foreach (var sentence in sentences)
             {
                 var cleanSentence = sentence.Trim();
-                if (cleanSentence.Length > 10 && !IsHeaderOrPageNumber(cleanSentence))
+                if (cleanSentence.Length > 20 && !IsHeaderOrPageNumber(cleanSentence) &&
+                   !cleanSentence.StartsWith("Copyright") && !cleanSentence.Contains("0022-0663"))
                 {
+                    
                     meaningfulText += cleanSentence + ". ";
-                    if (meaningfulText.Length > 200)
-                        break;
+                        if (meaningfulText.Length > 250)
+                            break;
                 }
             }
 
-            return CleanAndLimitText(meaningfulText, 300);
+                return CleanAndLimitText(meaningfulText, 400);
+            }
+
+        /// <summary>
+        /// Cleans abstract text by removing unwanted patterns
+        /// </summary>
+        /// <param name="text">Raw abstract text</param>
+        /// <returns>Cleaned abstract text</returns>
+        private string CleanAbstractText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return text;
+
+            // Remove common unwanted patterns
+            text = Regex.Replace(text, @"Copyright\s+\d{4}.*?by.*?\.", "", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\d{4}-\d{4}", ""); // Remove ISSN
+            text = Regex.Replace(text, @"\$\d+\.\d+", ""); // Remove price
+            text = Regex.Replace(text, @"^\d+\s*", ""); // Remove leading numbers
+            text = Regex.Replace(text, @"\s+", " "); // Normalize whitespace
+
+            return text.Trim();
+        }
+
+        /// <summary>
+        /// Validates if the extracted text is a good abstract
+        /// </summary>
+        /// <param name="text">Text to validate</param>
+        /// <returns>True if text appears to be a valid abstract</returns>
+        private bool IsValidAbstract(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text) || text.Length < 50)
+                return false;
+
+            // Check for abstract-like characteristics
+            var lowerText = text.ToLower();
+
+            // Should not contain these patterns
+            if (lowerText.Contains("copyright") ||
+                lowerText.Contains("0022-0663") ||
+                lowerText.Contains("$12.") ||
+                Regex.IsMatch(text, @"^\d+\s*$"))
+                return false;
+
+            // Should contain meaningful academic words
+            var academicWords = new[] { "study", "research", "analysis", "understanding", "investigate",
+                                      "examine", "approach", "method", "result", "finding", "student",
+                                      "learning", "perspective", "theory", "model" };
+
+            var academicWordCount = academicWords.Count(word => lowerText.Contains(word));
+            return academicWordCount >= 2;
         }
 
         /// <summary>
@@ -627,11 +940,62 @@ namespace VUniBox.Services.Metadata
         /// <returns>True if the text is likely a header or page number, false otherwise.</returns>
         private bool IsHeaderOrPageNumber(string text)
         {
-            // Check if text looks like a header, page number, or unwanted content
-            return text.Length < 5 ||
-                   Regex.IsMatch(text, @"^\d+$") ||
-                   Regex.IsMatch(text, @"^(chương|chapter|phần|part)\s*\d+", RegexOptions.IgnoreCase) ||
-                   text.All(c => char.IsDigit(c) || char.IsWhiteSpace(c) || "|-/\\".Contains(c));
+            if (string.IsNullOrWhiteSpace(text))
+                return true;
+
+            text = text.Trim();
+
+            // Page numbers (various formats)
+            if (Regex.IsMatch(text, @"^\d+$") ||                          // Simple page numbers
+                Regex.IsMatch(text, @"^Page\s*\d+", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"^\d+\s*of\s*\d+", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"^\[\d+\]$") ||                       // [1], [2], etc.
+                Regex.IsMatch(text, @"^-\s*\d+\s*-$"))                     // - 1 -, - 2 -, etc.
+                return true;
+
+            // Academic paper headers/footers
+            if (Regex.IsMatch(text, @"Journal\s+of\s+Educational\s+Psychology", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"Copyright\s+\d{4}", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"American\s+Psychological\s+Association", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"DOI:\s*10\.\d+", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"ISSN\s*\d{4}-\d{4}", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(text, @"Vol\.\s*\d+", RegexOptions.IgnoreCase) ||
+                text.Contains("0022-0663"))
+                return true;
+
+            // Publication identifiers
+            if (Regex.IsMatch(text, @"^\d{4}-\d{4}") ||                    // ISSN numbers
+                Regex.IsMatch(text, @"^10\.\d+/") ||                       // DOI numbers
+                Regex.IsMatch(text, @"\$\d+\.\d+"))                        // Price information
+                return true;
+
+            // Headers/Footers patterns
+            if (text.StartsWith("© ") ||                                   // Copyright symbols
+                text.All(char.IsUpper) && text.Length < 50 ||             // ALL CAPS short lines
+                Regex.IsMatch(text, @"^[A-Z\s]{3,30}$") ||                // Short uppercase text
+                Regex.IsMatch(text, @"^\d+\s+[A-Z][A-Z\s]+$"))            // Number followed by caps
+                return true;
+
+            // Very short lines that are likely metadata
+            if (text.Length < 5 ||
+                (text.Length < 10 && !text.Contains(" ")))
+                return true;
+
+            // Lines with only special characters or numbers
+            if (Regex.IsMatch(text, @"^[\d\s\-_=\.]+$"))
+                return true;
+
+            // Chapter/section headers
+            if (Regex.IsMatch(text, @"^(chương|chapter|phần|part)\s*\d+", RegexOptions.IgnoreCase))
+                return true;
+
+            // Running headers (repeated text at top/bottom of pages)
+            var commonHeaders = new[] { "INTRODUCTION", "METHODOLOGY", "RESULTS", "DISCUSSION",
+                                       "CONCLUSION", "REFERENCES", "APPENDIX", "ABSTRACT" };
+            if (commonHeaders.Any(header => text.Equals(header, StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            return false;
         }
 
         /// <summary>
@@ -767,6 +1131,31 @@ namespace VUniBox.Services.Metadata
             {
                 return text;
             }
+        }
+        /// <summary>
+        /// Detects the language of the given text based on common language patterns
+        /// </summary>
+        /// <param name="text">The text to analyze for language detection</param>
+        /// <returns>Language code (en, vi, etc.)</returns>
+        private string DetectLanguage(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return "en";
+
+            // Check for Vietnamese characters
+            if (Regex.IsMatch(text, @"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđĐ]"))
+                return "vi";
+
+            // Check for common Vietnamese words
+            var vietnameseWords = new[] { "và", "của", "trong", "một", "với", "này", "những", "được", "có", "cho", "từ", "theo", "về", "sẽ", "các", "người", "giáo", "học", "nghiên", "cứu" };
+            var lowerText = text.ToLower();
+            var vietnameseWordCount = vietnameseWords.Count(word => lowerText.Contains(word));
+
+            if (vietnameseWordCount >= 3)
+                return "vi";
+
+            // Default to English for academic papers
+            return "en";
         }
     }
 }

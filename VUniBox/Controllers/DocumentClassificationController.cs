@@ -29,14 +29,37 @@ namespace VUniBox.Controllers
         {
             _classificationService = classificationService;
             _configuration = configuration;
-            _uploadPath = _configuration["FileUpload:Path"] ?? "uploads";
-            
+
+            // Use absolute path for uploads in production
+            var configPath = _configuration["FileUpload:Path"];
+            if (!string.IsNullOrEmpty(configPath) && Path.IsPathRooted(configPath))
+            {
+                _uploadPath = configPath;
+            }
+            else
+            {
+                // Default to uploads folder in the app directory
+                _uploadPath = Path.Combine(Directory.GetCurrentDirectory(), "uploads");
+            }
             // Ensure upload path exists
             if (!Directory.Exists(_uploadPath))
             {
                 Directory.CreateDirectory(_uploadPath);
             }
         }
+
+        /// <summary>
+        /// Handles preflight CORS requests for file upload
+        /// </summary>
+        [HttpOptions("upload-file")]
+        public IActionResult UploadFileOptions()
+        {
+            Response.Headers.Add("Access-Control-Allow-Origin", "*");
+            Response.Headers.Add("Access-Control-Allow-Methods", "POST, OPTIONS");
+            Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            return Ok();
+        }
+
 
         /// <summary>
         /// Uploads a file and automatically classifies its document type.

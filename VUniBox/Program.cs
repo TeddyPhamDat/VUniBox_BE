@@ -180,23 +180,42 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll",
         builder => builder
-            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173", "https://vunibox.vercel.app")
+           .WithOrigins(
+                "http://103.253.146.132:5000",
+                "http://localhost:5173",
+                "https://vunibox.vercel.app",
+                "http://localhost:3000",
+                "https://api.vunibox.work.gd"
+            )
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials());
+            .AllowCredentials()
+            .SetIsOriginAllowed(origin => true)); // Allow any origin in development
 
     options.AddPolicy("Development",
         builder => builder
-            .WithOrigins("http://103.253.146.132:5000", "http://localhost:5173", "https://vunibox.vercel.app")
+            .AllowAnyOrigin()
             .AllowAnyHeader()
-            .AllowAnyMethod()
-            .AllowCredentials());
+            .AllowAnyMethod());
+            
 });
 
 
 var app = builder.Build();
 
-app.UseSession(); 
+app.UseSession();
+
+
+// CORS must be before authentication and authorization
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors("Development");
+}
+else
+{
+    app.UseCors("AllowAll");
+}
+
 // Configure different behavior for development vs production
 if (app.Environment.IsDevelopment())
 {
@@ -208,8 +227,6 @@ if (app.Environment.IsDevelopment())
         // c.RoutePrefix = string.Empty; // Uncomment to serve at root
     });
     
-    // Use more permissive CORS in development
-    app.UseCors("Development");
 }
 else
 {

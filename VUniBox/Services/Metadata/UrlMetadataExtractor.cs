@@ -4,6 +4,8 @@ using System.Text.RegularExpressions;
 using VUniBox.Models.DTO;
 using System.Web;
 using System.IO.Compression;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace VUniBox.Services.Metadata
 {
@@ -86,7 +88,7 @@ namespace VUniBox.Services.Metadata
                 }
                 catch
                 {
-                    return "Bài báo";
+                    return "Tài liệu";
                 }
             }
         }
@@ -113,7 +115,7 @@ namespace VUniBox.Services.Metadata
             }
             catch
             {
-                return "Báo điện tử";
+                return "Trang web";
             }
         }
         
@@ -142,6 +144,19 @@ namespace VUniBox.Services.Metadata
     {
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
+        
+        // Performance optimization: Cache recent results to avoid duplicate requests
+        private static readonly ConcurrentDictionary<string, (DocumentMetadataDto metadata, DateTime expiry)> _cache 
+            = new ConcurrentDictionary<string, (DocumentMetadataDto, DateTime)>();
+        
+        // Performance optimization: Track failed URLs to avoid retrying immediately
+        private static readonly ConcurrentDictionary<string, DateTime> _failedUrls 
+            = new ConcurrentDictionary<string, DateTime>();
+        
+        // Configuration for timeout and cache
+        private static readonly TimeSpan REQUEST_TIMEOUT = TimeSpan.FromSeconds(15); // Reduced from default
+        private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan FAILED_URL_COOLDOWN = TimeSpan.FromMinutes(5);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="UrlMetadataExtractor"/> class.
@@ -153,7 +168,8 @@ namespace VUniBox.Services.Metadata
             _httpClient = httpClient;
             _configuration = configuration;
             
-            // Configure HttpClient for automatic decompression if not already configured
+            // Configure HttpClient for performance
+            _httpClient.Timeout = REQUEST_TIMEOUT;
             if (!_httpClient.DefaultRequestHeaders.Contains("Accept-Encoding"))
             {
                 _httpClient.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
@@ -168,33 +184,121 @@ namespace VUniBox.Services.Metadata
         /// <returns>A <see cref="DocumentMetadataDto"/> containing the extracted metadata.</returns>
         public async Task<DocumentMetadataDto> ExtractMetadataAsync(string url, DocumentType documentType)
         {
+            var stopwatch = Stopwatch.StartNew();
+            
             try
             {
                 // Clean and validate URL first
                 url = CleanAndValidateUrl(url);
+                Console.WriteLine($"[PERF] Starting metadata extraction for: {url}");
                 
-                switch (documentType)
+                // Performance optimization: Check cache first
+                var cacheKey = $"{url}_{documentType}";
+                if (_cache.TryGetValue(cacheKey, out var cached) && cached.expiry > DateTime.UtcNow)
                 {
-                    case DocumentType.Research:
-                        return await ExtractFromResearchSiteAsync(url);
-                    case DocumentType.Book:
-                        return await ExtractFromBookSiteAsync(url);
-                    case DocumentType.Newspaper:
-                        return await ExtractFromNewsSiteAsync(url);
-                    default:
-                        return await ExtractGenericMetadataAsync(url);
+                    Console.WriteLine($"[PERF] Cache hit for {url} - took {stopwatch.ElapsedMilliseconds}ms");
+                    return cached.metadata;
                 }
+                
+                // Performance optimization: Check if URL recently failed
+                if (_failedUrls.TryGetValue(url, out var failTime) && 
+                    DateTime.UtcNow - failTime < FAILED_URL_COOLDOWN)
+                {
+                    Console.WriteLine($"[PERF] URL recently failed, using fallback immediately: {url}");
+                    return CreateFallbackMetadata(url, documentType, "Recently failed - using cached fallback");
+                }
+                
+                DocumentMetadataDto result;
+                
+                // Use timeout wrapper for all extraction methods
+                using (var cts = new CancellationTokenSource(REQUEST_TIMEOUT))
+                {
+                    switch (documentType)
+                    {
+                        case DocumentType.Research:
+                            result = await ExtractFromResearchSiteAsync(url).ConfigureAwait(false);
+                            break;
+                        case DocumentType.Book:
+                            result = await ExtractFromBookSiteAsync(url).ConfigureAwait(false);
+                            break;
+                        case DocumentType.Newspaper:
+                            result = await ExtractFromNewsSiteAsync(url).ConfigureAwait(false);
+                            break;
+                        default:
+                            result = await ExtractGenericMetadataAsync(url).ConfigureAwait(false);
+                            break;
+                    }
+                }
+                
+                // Cache successful result
+                _cache.TryAdd(cacheKey, (result, DateTime.UtcNow.Add(CACHE_DURATION)));
+                
+                // Clean old cache entries periodically
+                if (_cache.Count > 100)
+                {
+                    CleanExpiredCache();
+                }
+                
+                Console.WriteLine($"[PERF] Successfully extracted metadata for {url} - took {stopwatch.ElapsedMilliseconds}ms");
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine($"[PERF] Timeout after {stopwatch.ElapsedMilliseconds}ms for {url}");
+                _failedUrls.TryAdd(url, DateTime.UtcNow);
+                return CreateFallbackMetadata(url, documentType, "Request timeout");
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("403") || ex.Message.Contains("Forbidden"))
             {
-                Console.WriteLine($"[WARNING] Access denied for {url}, creating fallback metadata");
+                Console.WriteLine($"[PERF] Access denied for {url} after {stopwatch.ElapsedMilliseconds}ms, creating fallback metadata");
+                _failedUrls.TryAdd(url, DateTime.UtcNow);
                 return CreateFallbackMetadata(url, documentType);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ERROR] Failed to extract metadata from {url}: {ex.Message}");
+                Console.WriteLine($"[PERF] Failed to extract metadata from {url} after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
+                _failedUrls.TryAdd(url, DateTime.UtcNow);
                 return CreateFallbackMetadata(url, documentType, ex.Message);
             }
+        }
+        
+        /// <summary>
+        /// Cleans expired entries from cache to prevent memory leaks
+        /// </summary>
+        private static void CleanExpiredCache()
+        {
+            var now = DateTime.UtcNow;
+            var expiredKeys = _cache.Where(kvp => kvp.Value.expiry < now).Select(kvp => kvp.Key).ToList();
+            
+            foreach (var key in expiredKeys)
+            {
+                _cache.TryRemove(key, out _);
+            }
+            
+            // Also clean failed URLs that are past cooldown
+            var expiredFailedUrls = _failedUrls.Where(kvp => now - kvp.Value > FAILED_URL_COOLDOWN)
+                                              .Select(kvp => kvp.Key).ToList();
+            
+            foreach (var url in expiredFailedUrls)
+            {
+                _failedUrls.TryRemove(url, out _);
+            }
+            
+            Console.WriteLine($"[PERF] Cleaned {expiredKeys.Count} expired cache entries and {expiredFailedUrls.Count} expired failed URLs");
+        }
+        
+        /// <summary>
+        /// Force clear all cache entries (useful for clearing old Vietnamese fallback metadata)
+        /// </summary>
+        public static void ClearAllCache()
+        {
+            var cacheCount = _cache.Count;
+            var failedCount = _failedUrls.Count;
+            
+            _cache.Clear();
+            _failedUrls.Clear();
+            
+            Console.WriteLine($"[PERF] Force cleared {cacheCount} cache entries and {failedCount} failed URLs");
         }
 
         /// <summary>
@@ -982,118 +1086,127 @@ namespace VUniBox.Services.Metadata
         }
 
         /// <summary>
-        /// Creates fallback metadata when content cannot be extracted due to access restrictions.
+        /// Creates intelligent fallback metadata when extraction fails, with smart title extraction and professional descriptions.
         /// </summary>
-        /// <param name="url">The URL that couldn't be accessed.</param>
-        /// <param name="documentType">The classified document type.</param>
+        /// <param name="url">The URL that failed to extract.</param>
+        /// <param name="documentType">The type of document.</param>
         /// <param name="errorMessage">Optional error message for debugging.</param>
-        /// <returns>A fallback DocumentMetadataDto with basic information.</returns>
+        /// <returns>A fallback DocumentMetadataDto with intelligent information.</returns>
         private DocumentMetadataDto CreateFallbackMetadata(string url, DocumentType documentType, string errorMessage = null)
         {
             var uri = new Uri(url);
             var domain = uri.Host.ToLowerInvariant();
             
-            // Extract title from URL structure
+            // Extract intelligent title from URL structure
             var extractedTitle = ExtractTitleFromUrl(url, domain);
             
             // Determine source and publication type based on domain
             var (source, publicationType) = DetermineSourceAndType(domain, documentType);
             
-            // Create enhanced metadata based on the specific academic site
             var metadata = new DocumentMetadataDto
             {
                 URL = url,
+                Title = extractedTitle ?? $"{publicationType} từ {source}",
                 Source = source,
-                Language = "en", // Most academic papers are in English
+                Language = domain.Contains(".vn") ? "vi" : "en", // Detect Vietnamese sites
                 RetrievedDate = DateTime.UtcNow
             };
             
-            // Customize based on the specific academic site
-            if (domain.Contains("researchgate.net"))
+            // Create intelligent descriptions based on site type
+            if (domain.Contains("researchgate"))
             {
-                metadata.Title = extractedTitle ?? "ResearchGate Publication";
-                metadata.Description = "This publication is available on ResearchGate. Due to access restrictions, automatic metadata extraction was not possible. The full text and metadata can be accessed directly on ResearchGate.";
-                metadata.Abstract = "Abstract and full content available on ResearchGate platform. Please visit the original URL for complete access to the publication.";
+                metadata.Description = "Nghiên cứu học thuật từ ResearchGate - Mạng xã hội dành cho các nhà khoa học và nghiên cứu";
+                metadata.Abstract = "Bài nghiên cứu học thuật - tóm tắt có sẵn trên nền tảng ResearchGate";
                 metadata.Publisher = "ResearchGate";
                 
-                // Try to extract more info from URL structure
-                var pubMatch = System.Text.RegularExpressions.Regex.Match(url, @"publication/(\d+)_(.+)");
-                if (pubMatch.Success)
+                // Try to extract more info from ResearchGate URL pattern
+                var rgMatch = System.Text.RegularExpressions.Regex.Match(url, @"publication/(\d+)_(.+)");
+                if (rgMatch.Success)
                 {
-                    var urlTitle = pubMatch.Groups[2].Value.Replace("_", " ");
-                    urlTitle = System.Net.WebUtility.UrlDecode(urlTitle);
-                    metadata.Title = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(urlTitle.ToLower());
+                    var publicationId = rgMatch.Groups[1].Value;
+                    metadata.DOI = $"RG:{publicationId}";
+                    
+                    // If title wasn't extracted, try again with better parsing
+                    if (metadata.Title.StartsWith("Research") || metadata.Title.Contains("từ"))
+                    {
+                        var titlePart = rgMatch.Groups[2].Value;
+                        var cleanTitle = titlePart.Replace('_', ' ')
+                                                 .Replace('-', ' ')
+                                                 .Replace("%20", " ");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\s+", " ");
+                        cleanTitle = System.Web.HttpUtility.UrlDecode(cleanTitle);
+                        
+                        // Smart title case with proper handling of acronyms
+                        cleanTitle = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(cleanTitle.ToLower());
+                        
+                        // Fix common acronyms that should be uppercase
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bAi\b", "AI");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bIt\b", "IT");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bUi\b", "UI");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bUx\b", "UX");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bIoT\b", "IoT");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bNlp\b", "NLP");
+                        cleanTitle = System.Text.RegularExpressions.Regex.Replace(cleanTitle, @"\bApi\b", "API");
+                        
+                        metadata.Title = cleanTitle;
+                    }
                 }
             }
-            else if (domain.Contains("arxiv.org"))
+            else if (domain.Contains("arxiv"))
             {
-                metadata.Title = extractedTitle ?? "arXiv Preprint";
-                metadata.Description = "This is an arXiv preprint paper. Due to access restrictions, automatic metadata extraction was not possible. The full text is available on arXiv.";
-                metadata.Abstract = "Preprint abstract available on arXiv. Please visit the original URL for complete access to the paper.";
+                metadata.Description = "Bài báo khoa học từ arXiv - Kho lưu trữ tiền ấn phẩm cho vật lý, toán học, khoa học máy tính";
+                metadata.Abstract = "Bài báo khoa học tiền ấn phẩm - toàn văn có sẵn trên arXiv";
                 metadata.Publisher = "arXiv";
-                
-                // Extract arXiv ID and create DOI
-                var arxivMatch = System.Text.RegularExpressions.Regex.Match(url, @"abs/(\d+\.\d+)");
-                if (arxivMatch.Success)
-                {
-                    var arxivId = arxivMatch.Groups[1].Value;
-                    metadata.DOI = $"arXiv:{arxivId}";
-                    metadata.Title = $"arXiv:{arxivId} - {extractedTitle ?? "Preprint"}";
-                }
+                metadata.Language = "en";
             }
-            else if (domain.Contains("ieee.org"))
+            else if (domain.Contains("ieee"))
             {
-                metadata.Title = extractedTitle ?? "IEEE Publication";
-                metadata.Description = "This is an IEEE publication. Due to access restrictions, automatic metadata extraction was not possible. The full text is available through IEEE Xplore.";
-                metadata.Abstract = "Abstract available on IEEE Xplore. Please visit the original URL for complete access to the publication.";
+                metadata.Description = "Tài liệu kỹ thuật từ IEEE - Viện Kỹ sư Điện và Điện tử";
+                metadata.Abstract = "Bài báo kỹ thuật IEEE - nội dung đầy đủ dành cho người đăng ký";
                 metadata.Publisher = "IEEE";
-                metadata.Journal = "IEEE Conference/Journal";
             }
-            else if (domain.Contains("springer.com"))
+            else if (domain.Contains("springer"))
             {
-                metadata.Title = extractedTitle ?? "Springer Publication";
-                metadata.Description = "This is a Springer publication. Due to access restrictions, automatic metadata extraction was not possible. The full text is available through Springer Link.";
-                metadata.Abstract = "Abstract available on Springer Link. Please visit the original URL for complete access to the publication.";
-                metadata.Publisher = "Springer";
+                metadata.Description = "Nghiên cứu học thuật từ Springer Nature - Nhà xuất bản khoa học quốc tế";
+                metadata.Abstract = "Bài báo nghiên cứu được xuất bản bởi Springer Nature";
+                metadata.Publisher = "Springer Nature";
             }
-            else if (domain.Contains("acm.org"))
+            else if (domain.Contains("pubmed"))
             {
-                metadata.Title = extractedTitle ?? "ACM Publication";
-                metadata.Description = "This is an ACM publication. Due to access restrictions, automatic metadata extraction was not possible. The full text is available through ACM Digital Library.";
-                metadata.Abstract = "Abstract available on ACM Digital Library. Please visit the original URL for complete access to the publication.";
-                metadata.Publisher = "ACM";
-            }
-            else if (domain.Contains("pubmed") || domain.Contains("ncbi.nlm.nih.gov"))
-            {
-                metadata.Title = extractedTitle ?? "PubMed Publication";
-                metadata.Description = "This is a medical/biological publication from PubMed. Due to access restrictions, automatic metadata extraction was not possible.";
-                metadata.Abstract = "Medical abstract available on PubMed. Please visit the original URL for complete access to the publication.";
+                metadata.Description = "Nghiên cứu y sinh từ PubMed - Cơ sở dữ liệu y học của NIH";
+                metadata.Abstract = "Bài nghiên cứu y sinh học - tóm tắt có sẵn trong PubMed";
                 metadata.Publisher = "PubMed/NCBI";
-                metadata.Subject = "Medicine/Biology";
             }
             else
             {
-                // Generic academic publication fallback
-                metadata.Title = extractedTitle ?? $"{publicationType} từ {source}";
-                metadata.Description = "Không thể trích xuất nội dung tự động do hạn chế truy cập. Vui lòng truy cập URL gốc để xem đầy đủ nội dung.";
-                metadata.Abstract = "Tóm tắt và nội dung đầy đủ có sẵn trên trang gốc. Vui lòng truy cập URL để xem chi tiết.";
-                metadata.Language = "vi";
-            }
-            
-            // Set default author info for academic sources
-            if (documentType == DocumentType.Research)
-            {
-                metadata.Authors = "Authors available on original publication page";
-                metadata.Author = "Unknown";
+                // Generic fallback for other sites
+                metadata.Description = $"Tài liệu từ {source} - có thể cần đăng ký hoặc đăng nhập để truy cập";
+                metadata.Abstract = $"Tài liệu được lưu trữ trên nền tảng {source}";
+                metadata.Language = domain.Contains(".vn") ? "vi" : "en";
             }
             
             // Add debug information if error message is provided
             if (!string.IsNullOrEmpty(errorMessage))
             {
-                Console.WriteLine($"[DEBUG] Enhanced fallback metadata created for {url}. Error: {errorMessage}");
-                Console.WriteLine($"[DEBUG] Title: {metadata.Title}");
-                Console.WriteLine($"[DEBUG] Source: {metadata.Source}");
-                Console.WriteLine($"[DEBUG] Publisher: {metadata.Publisher}");
+                // Determine if the error is related to ScraperAPI or network issues
+                if (errorMessage.Contains("ScraperAPI") || errorMessage.Contains("api_key"))
+                {
+                    Console.WriteLine($"[PERF] Tạo thông tin fallback cho {domain} do ScraperAPI gặp vấn đề. Tiêu đề: '{metadata.Title}'");
+                    metadata.Description += " (Lưu ý: Dịch vụ trích xuất tự động tạm thời gặp sự cố, thông tin hiển thị là cơ bản)";
+                }
+                else if (errorMessage.Contains("timeout") || errorMessage.Contains("Request timeout"))
+                {
+                    Console.WriteLine($"[PERF] Tạo thông tin fallback cho {domain} do timeout. Tiêu đề: '{metadata.Title}'");
+                    metadata.Description += " (Lưu ý: Trang web phản hồi chậm, thông tin hiển thị là cơ bản)";
+                }
+                else
+                {
+                    Console.WriteLine($"[PERF] Tạo thông tin fallback cho {domain}. Tiêu đề: '{metadata.Title}' | Lỗi: {errorMessage}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[PERF] Tạo thông tin fallback thông minh cho {domain}. Tiêu đề: '{metadata.Title}'");
             }
             
             return metadata;
@@ -1157,21 +1270,44 @@ namespace VUniBox.Services.Metadata
                 // ResearchGate: /publication/123456_Title_With_Underscores
                 if (domain.Contains("researchgate"))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(url, @"publication/\d+_(.+)");
+                    var match = System.Text.RegularExpressions.Regex.Match(url, @"publication/\d+_(.+?)(?:\?|#|$)");
                     if (match.Success)
                     {
-                        var title = match.Groups[1].Value.Replace('_', ' ');
-                        // Clean up common URL artifacts
-                        title = System.Text.RegularExpressions.Regex.Replace(title, @"\?.*$", ""); // Remove query parameters
-                        title = System.Text.RegularExpressions.Regex.Replace(title, @"#.*$", ""); // Remove fragments
-                        title = System.Web.HttpUtility.UrlDecode(title);
+                        var title = match.Groups[1].Value;
                         
-                        // Clean up common artifacts specific to ResearchGate
-                        title = title.Replace("-", " ");
-                        title = System.Text.RegularExpressions.Regex.Replace(title, @"\s+", " "); // Multiple spaces to single
+                        // Clean up URL encoding and formatting
+                        title = System.Web.HttpUtility.UrlDecode(title);
+                        title = title.Replace('_', ' ').Replace('-', ' ').Replace("%20", " ");
+                        
+                        // Remove common URL artifacts and clean whitespace
+                        title = System.Text.RegularExpressions.Regex.Replace(title, @"\s+", " ");
                         title = title.Trim();
                         
-                        return title;
+                        // Convert to proper title case for better readability
+                        if (!string.IsNullOrEmpty(title))
+                        {
+                            title = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(title.ToLower());
+                            
+                            // Fix common acronyms that should be uppercase
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bAi\b", "AI");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bIt\b", "IT");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bUi\b", "UI");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bUx\b", "UX");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bIoT\b", "IoT");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bNlp\b", "NLP");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bApi\b", "API");
+                            title = System.Text.RegularExpressions.Regex.Replace(title, @"\bXi\b", "XI"); // For "Region XI"
+                            
+                            Console.WriteLine($"[PERF] Extracted ResearchGate title: '{title}'");
+                            return title;
+                        }
+                    }
+                    
+                    // Fallback: try to extract just the numeric ID for ResearchGate
+                    var idMatch = System.Text.RegularExpressions.Regex.Match(url, @"publication/(\d+)");
+                    if (idMatch.Success)
+                    {
+                        return $"ResearchGate Publication {idMatch.Groups[1].Value}";
                     }
                 }
                 
@@ -1296,157 +1432,6 @@ namespace VUniBox.Services.Metadata
         }
 
         /// <summary>
-        /// Try proxy strategies for difficult sites
-        /// </summary>
-        private async Task TryProxyStrategies(string url)
-        {
-            // This is a placeholder for future proxy implementation
-            // For now, we'll add additional delay and different request patterns
-            Console.WriteLine("[DEBUG] Implementing additional access strategies...");
-            
-            try
-            {
-                // Strategy: Try with longer delays between requests
-                await Task.Delay(3000);
-                
-                // Strategy: Try with different request patterns
-                using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(45);
-                client.DefaultRequestHeaders.Clear();
-                
-                // Simulate real browsing behavior
-                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-                client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
-                client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9,vi;q=0.8");
-                client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                client.DefaultRequestHeaders.Add("Cache-Control", "max-age=0");
-                client.DefaultRequestHeaders.Add("sec-ch-ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"");
-                client.DefaultRequestHeaders.Add("sec-ch-ua-mobile", "?0");
-                client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
-                client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                
-                // Add site-specific headers
-                if (url.Contains("researchgate.net"))
-                {
-                    client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
-                    // Simulate being referred from Google Scholar
-                    client.DefaultRequestHeaders.Add("Origin", "https://scholar.google.com");
-                }
-                
-                Console.WriteLine("[DEBUG] Trying enhanced browser simulation...");
-                var response = await client.GetAsync(url);
-                Console.WriteLine($"[DEBUG] Enhanced simulation response: {response.StatusCode}");
-                
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DEBUG] Proxy strategies failed: {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Try advanced browser simulation techniques
-        /// </summary>
-        private async Task<string?> TryAdvancedBrowserSimulation(string url)
-        {
-            Console.WriteLine("[DEBUG] Trying advanced browser simulation techniques...");
-            
-            var advancedUserAgents = new[]
-            {
-                // Latest Chrome
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                // Latest Firefox  
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
-                // Latest Edge
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-                // Safari on macOS
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.0 Safari/537.36",
-                // Academic crawler simulation
-                "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-                // Research bot simulation
-                "Mozilla/5.0 (compatible; ResearchBot/1.0; +https://example.com/bot)",
-            };
-            
-            for (int i = 0; i < advancedUserAgents.Length; i++)
-            {
-                try
-                {
-                    Console.WriteLine($"[DEBUG] Advanced simulation attempt {i + 1}/{advancedUserAgents.Length}");
-                    
-                    using var client = new HttpClient();
-                    client.Timeout = TimeSpan.FromSeconds(60);
-                    client.DefaultRequestHeaders.Clear();
-                    
-                    client.DefaultRequestHeaders.Add("User-Agent", advancedUserAgents[i]);
-                    
-                    // Add different headers based on user agent
-                    if (advancedUserAgents[i].Contains("Chrome"))
-                    {
-                        client.DefaultRequestHeaders.Add("sec-ch-ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-mobile", "?0");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
-                    }
-                    else if (advancedUserAgents[i].Contains("Firefox"))
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.5");
-                    }
-                    else if (advancedUserAgents[i].Contains("Googlebot"))
-                    {
-                        // Googlebot specific headers
-                        client.DefaultRequestHeaders.Add("Accept", "*/*");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "en");
-                    }
-                    
-                    // Site-specific optimizations
-                    if (url.Contains("researchgate.net"))
-                    {
-                        // Add ResearchGate specific headers
-                        client.DefaultRequestHeaders.Add("Referer", "https://www.google.com/search?q=researchgate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "cross-site");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        
-                        // Add cookies that might help
-                        client.DefaultRequestHeaders.Add("Cookie", "RG_locale=en; RG_analyticsOptOut=false; consent_status=accepted");
-                    }
-                    
-                    var response = await client.GetAsync(url);
-                    Console.WriteLine($"[DEBUG] Advanced simulation {i + 1} response: {response.StatusCode}");
-                    
-                    if (response.IsSuccessStatusCode)
-                    {
-                        var content = await response.Content.ReadAsStringAsync();
-                        if (!string.IsNullOrEmpty(content) && 
-                            (content.Contains("<title", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<html", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<head", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            Console.WriteLine($"[DEBUG] Advanced simulation {i + 1} succeeded!");
-                            return content;
-                        }
-                    }
-                    
-                    // Wait between attempts to avoid rate limiting
-                    if (i < advancedUserAgents.Length - 1)
-                    {
-                        await Task.Delay(2000);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[DEBUG] Advanced simulation {i + 1} failed: {ex.Message}");
-                }
-            }
-            
-            return null;
-        }
-
-        /// <summary>
         /// Try alternative URL strategies for blocked sites
         /// </summary>
         private async Task<string?> TryAlternativeUrlStrategies(string originalUrl)
@@ -1456,10 +1441,9 @@ namespace VUniBox.Services.Metadata
             // ResearchGate alternatives
             if (originalUrl.Contains("researchgate.net"))
             {
-                // Mobile version
-                strategies.Add(originalUrl.Replace("www.researchgate.net", "m.researchgate.net"));
+                // Note: m.researchgate.net doesn't exist, only try working alternatives
                 
-                // Extract publication ID and try direct PDF
+                // Extract publication ID and try alternative patterns
                 var pubMatch = System.Text.RegularExpressions.Regex.Match(originalUrl, @"publication/(\d+)");
                 if (pubMatch.Success)
                 {
@@ -1528,450 +1512,313 @@ namespace VUniBox.Services.Metadata
         }
 
         /// <summary>
-        /// Retrieves HTML content using ScraperAPI when direct access fails.
+        /// Retrieves HTML content using ScraperAPI with optimized fast-fail strategies.
         /// </summary>
         /// <param name="url">The URL to fetch content from.</param>
         /// <returns>The HTML content as a string.</returns>
         private async Task<string> GetPageContentWithScraperAPI(string url)
         {
+            var stopwatch = Stopwatch.StartNew();
+            
             try
             {
                 var apiKey = _configuration["ScraperAPI:ApiKey"];
                 var baseUrl = _configuration["ScraperAPI:BaseUrl"];
                 
+                Console.WriteLine($"[DEBUG] ScraperAPI Config - ApiKey: {(string.IsNullOrEmpty(apiKey) ? "MISSING" : "PRESENT")}, BaseUrl: {baseUrl ?? "MISSING"}");
+                
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    throw new Exception("ScraperAPI key not configured");
+                    Console.WriteLine("[PERF] ScraperAPI key not configured - falling back to basic extraction");
+                    throw new Exception("ScraperAPI không được cấu hình - sử dụng trích xuất cơ bản");
+                }
+                
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    Console.WriteLine("[PERF] ScraperAPI BaseUrl not configured - using default");
+                    baseUrl = "http://api.scraperapi.com";
                 }
 
                 var encodedUrl = Uri.EscapeDataString(url);
+                Console.WriteLine($"[PERF] Starting ScraperAPI for: {url}");
                 
-                // Try multiple ScraperAPI configurations for better success rate
-                var scraperConfigs = new[]
+                // Fast-fail: Try multiple configurations in parallel with shorter timeouts
+                var configurations = new[]
                 {
-                    // Configuration 1: Standard academic site parameters
-                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&country_code=us&session_number=1&autoparse=true",
+                    // Fast config - minimal parameters for speed
+                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=false",
                     
-                    // Configuration 2: Simplified parameters for problematic sites
+                    // Standard config - basic rendering
                     $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&country_code=us",
                     
-                    // Configuration 3: Basic parameters only
-                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true",
-                    
-                    // Configuration 4: No rendering for simple sites
-                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&country_code=us&session_number=1",
-                    
-                    // Configuration 5: Minimal parameters as last resort
-                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}"
+                    // Premium config - for difficult sites (only if needed)
+                    $"{baseUrl}?api_key={apiKey}&url={encodedUrl}&render=true&premium_proxy=true&country_code=us&session_number=1"
                 };
+
+                // Use CancellationToken for timeout control
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12)); // Reduced from 20s to 12s total
                 
-                Exception lastException = null;
-                
-                for (int configIndex = 0; configIndex < scraperConfigs.Length; configIndex++)
+                // Try configurations in order, but don't wait too long for each
+                foreach (var scraperUrl in configurations)
                 {
-                    var scraperUrl = scraperConfigs[configIndex];
-                    
                     try
                     {
-                        Console.WriteLine($"[DEBUG] ScraperAPI attempt {configIndex + 1}/{scraperConfigs.Length}: {scraperUrl.Replace(apiKey, "***API_KEY***")}");
+                        Console.WriteLine($"[PERF] Trying ScraperAPI config #{Array.IndexOf(configurations, scraperUrl) + 1}");
                         
-                        using var handler = new HttpClientHandler()
-                        {
-                            AutomaticDecompression = System.Net.DecompressionMethods.None // Disable automatic decompression
-                        };
+                        using var client = new HttpClient();
+                        client.Timeout = TimeSpan.FromSeconds(5); // Reduced from 8s to 5s for faster fail
                         
-                        using var client = new HttpClient(handler);
-                        client.Timeout = TimeSpan.FromMinutes(3); // ScraperAPI needs more time
+                        // Minimal headers for speed
+                        client.DefaultRequestHeaders.Add("Accept", "text/html");
                         
-                        // Add headers to mimic real browser behavior
-                        client.DefaultRequestHeaders.Clear();
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.5");
-                        client.DefaultRequestHeaders.Add("Cache-Control", "no-cache");
-                        client.DefaultRequestHeaders.Add("Pragma", "no-cache");
+                        var response = await client.GetAsync(scraperUrl, cts.Token).ConfigureAwait(false);
                         
-                        var response = await client.GetAsync(scraperUrl);
-                        Console.WriteLine($"[DEBUG] ScraperAPI Response: {response.StatusCode}");
-                        Console.WriteLine($"[DEBUG] Response Content-Type: {response.Content.Headers.ContentType}");
-                        Console.WriteLine($"[DEBUG] Response Content-Encoding: {response.Content.Headers.ContentEncoding}");
+                        Console.WriteLine($"[DEBUG] ScraperAPI response: {response.StatusCode} | Headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join(";", h.Value)}"))}");
                         
                         if (response.IsSuccessStatusCode)
                         {
-                            // Read content properly handling encoding
-                            var content = await response.Content.ReadAsStringAsync();
-                            Console.WriteLine($"[DEBUG] ScraperAPI content length: {content?.Length}");
+                            var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            Console.WriteLine($"[DEBUG] ScraperAPI content length: {content?.Length ?? 0}");
                             
-                            // Debug: Show first 500 characters of content to understand the structure
-                            if (!string.IsNullOrEmpty(content))
+                            // Quick validation
+                            if (!string.IsNullOrEmpty(content) && content.Contains("<", StringComparison.OrdinalIgnoreCase))
                             {
-                                var preview = content.Length > 500 ? content.Substring(0, 500) : content;
-                                Console.WriteLine($"[DEBUG] ScraperAPI content preview: {preview}");
-                                
-                                // Check if content appears to be binary/compressed
-                                var binaryCharCount = content.Take(100).Count(c => c < 32 && c != '\r' && c != '\n' && c != '\t');
-                                if (binaryCharCount > 10)
-                                {
-                                    Console.WriteLine($"[DEBUG] Content appears to be binary/compressed (binary chars: {binaryCharCount}/100)");
-                                    continue; // Try next configuration
-                                }
-                                
-                                // More flexible HTML validation - check for any HTML-like content
-                                if (content.Contains("<html", StringComparison.OrdinalIgnoreCase) || 
-                                    content.Contains("<!doctype", StringComparison.OrdinalIgnoreCase) ||
-                                    content.Contains("<title", StringComparison.OrdinalIgnoreCase) ||
-                                    content.Contains("<head", StringComparison.OrdinalIgnoreCase) ||
-                                    content.Contains("<body", StringComparison.OrdinalIgnoreCase) ||
-                                    content.Contains("<div", StringComparison.OrdinalIgnoreCase) ||
-                                    content.Contains("<meta", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    Console.WriteLine($"[DEBUG] ScraperAPI succeeded with configuration {configIndex + 1}!");
-                                    return content;
-                                }
-                                else
-                                {
-                                    Console.WriteLine($"[DEBUG] Configuration {configIndex + 1} returned invalid HTML content");
-                                    lastException = new Exception($"Configuration {configIndex + 1} returned invalid HTML content");
-                                    continue; // Try next configuration
-                                }
+                                Console.WriteLine($"[PERF] ScraperAPI succeeded with config #{Array.IndexOf(configurations, scraperUrl) + 1} in {stopwatch.ElapsedMilliseconds}ms");
+                                return content;
                             }
                             else
                             {
-                                Console.WriteLine($"[DEBUG] Configuration {configIndex + 1} returned empty content");
-                                lastException = new Exception($"Configuration {configIndex + 1} returned empty content");
-                                continue;
+                                Console.WriteLine($"[DEBUG] ScraperAPI returned non-HTML content: {content?.Substring(0, Math.Min(200, content?.Length ?? 0))}");
                             }
                         }
-                        else
-                        {
-                            var errorMessage = $"Configuration {configIndex + 1} returned: {response.StatusCode} - {response.ReasonPhrase}";
-                            Console.WriteLine($"[DEBUG] {errorMessage}");
-                            lastException = new Exception(errorMessage);
-                            
-                            // If we get 500 InternalServerError, wait a bit before trying next config
-                            if (response.StatusCode == System.Net.HttpStatusCode.InternalServerError)
-                            {
-                                Console.WriteLine("[DEBUG] InternalServerError detected, waiting before next attempt...");
-                                await Task.Delay(2000);
-                            }
-                            
-                            continue; // Try next configuration
-                        }
+                        
+                        Console.WriteLine($"[PERF] Config #{Array.IndexOf(configurations, scraperUrl) + 1} failed: {response.StatusCode}");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Console.WriteLine($"[PERF] ScraperAPI config #{Array.IndexOf(configurations, scraperUrl) + 1} timed out");
+                        break; // Don't try more configs if we're timing out
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[DEBUG] ScraperAPI configuration {configIndex + 1} failed: {ex.Message}");
-                        lastException = ex;
-                        
-                        // Wait a bit before trying next configuration
-                        if (configIndex < scraperConfigs.Length - 1)
-                        {
-                            await Task.Delay(1000);
-                        }
-                        continue;
+                        Console.WriteLine($"[PERF] ScraperAPI config #{Array.IndexOf(configurations, scraperUrl) + 1} error: {ex.Message}");
                     }
                 }
                 
-                // All configurations failed
-                throw new Exception($"All ScraperAPI configurations failed. Last error: {lastException?.Message}");
+                throw new Exception($"ScraperAPI không thể truy cập trang web sau {stopwatch.ElapsedMilliseconds}ms - sử dụng thông tin cơ bản");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[DEBUG] ScraperAPI failed: {ex.Message}");
+                Console.WriteLine($"[PERF] ScraperAPI hoàn toàn thất bại sau {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
                 throw;
             }
         }
 
         /// <summary>
-        /// Retrieves the HTML content of a given URL.
-        /// Strategy: Always try direct access first to save ScraperAPI tokens, only fallback when blocked.
+        /// Retrieves the HTML content of a given URL with optimized parallel strategies.
+        /// Strategy: Try direct access and alternative strategies in parallel for speed.
         /// </summary>
         /// <param name="url">The URL to fetch content from.</param>
         /// <returns>The HTML content as a string.</returns>
         /// <exception cref="Exception">Thrown if fetching the page content fails.</exception>
         private async Task<string> GetPageContentAsync(string url)
         {
+            var stopwatch = Stopwatch.StartNew();
             Exception? lastException = null;
             
-            // STEP 1: Always try direct access first to save ScraperAPI tokens
-            // Try different User-Agent strings to bypass restrictions
-            var userAgents = new[]
-            {
-                // Latest Chrome on Windows
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-                // Latest Firefox on Windows  
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
-                // Latest Edge on Windows
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
-                // Latest Safari on Mac
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
-            };
-
-            // Different approaches for each attempt
-            for (int attempt = 0; attempt < userAgents.Length; attempt++)
-            {
-                try
-                {
-                    // Create a new HttpClient for each attempt to avoid connection pooling issues
-                    using var client = new HttpClient();
-                    
-                    // Set timeout
-                    client.Timeout = TimeSpan.FromSeconds(30);
-                    
-                    // Clear default headers
-                    client.DefaultRequestHeaders.Clear();
-                    
-                    // Set User-Agent
-                    client.DefaultRequestHeaders.Add("User-Agent", userAgents[attempt]);
-                    
-                    // Set comprehensive headers that match real browsers exactly
-                    if (attempt == 0) // Chrome-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi,en-US;q=0.9,en;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br, zstd");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua", "\"Chromium\";v=\"127\", \"Not;A=Brand\";v=\"99\"");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-mobile", "?0");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                        client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                        client.DefaultRequestHeaders.Add("cache-control", "max-age=0");
-                    }
-                    else if (attempt == 1) // Firefox-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi,en-US;q=0.7,en;q=0.3");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                        client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                    }
-                    else if (attempt == 2) // Edge-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi,en;q=0.9");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua", "\"Microsoft Edge\";v=\"127\", \"Chromium\";v=\"127\", \"Not;A=Brand\";v=\"99\"");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-mobile", "?0");
-                        client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
-                        client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
-                        client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
-                        client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
-                        client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
-                    }
-                    else // Safari-like headers
-                    {
-                        client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                        client.DefaultRequestHeaders.Add("Accept-Language", "vi-vn");
-                        client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-                        client.DefaultRequestHeaders.Add("cache-control", "max-age=0");
-                    }
-                    
-                    // Special handling for ResearchGate
-                    if (url.Contains("researchgate.net"))
-                    {
-                        if (attempt == 0)
-                        {
-                            client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
-                            client.DefaultRequestHeaders.Add("Origin", "https://www.google.com");
-                            // Add cookies to simulate real browsing session
-                            client.DefaultRequestHeaders.Add("Cookie", "RG_locale=en; RG_analyticsOptOut=false");
-                        }
-                        
-                        // Try ResearchGate mobile URL first (often less protected)
-                        if (attempt == 0 && !url.Contains("m.researchgate"))
-                        {
-                            var mobileUrl = url.Replace("www.researchgate.net", "m.researchgate.net");
-                            Console.WriteLine($"[DEBUG] Trying mobile ResearchGate URL: {mobileUrl}");
-                            
-                            try
-                            {
-                                var mobileResponse = await client.GetAsync(mobileUrl);
-                                if (mobileResponse.IsSuccessStatusCode)
-                                {
-                                    var mobileContent = await mobileResponse.Content.ReadAsStringAsync();
-                                    if (!string.IsNullOrEmpty(mobileContent) && mobileContent.Contains("<title"))
-                                    {
-                                        Console.WriteLine("[DEBUG] Mobile ResearchGate succeeded!");
-                                        return mobileContent;
-                                    }
-                                }
-                            }
-                            catch (Exception mobileEx)
-                            {
-                                Console.WriteLine($"[DEBUG] Mobile ResearchGate failed: {mobileEx.Message}");
-                            }
-                        }
-                    }
-                    // Special handling for academic sites
-                    else if (url.Contains("ieee.org") || url.Contains("acm.org") || url.Contains("springer.com"))
-                    {
-                        if (attempt == 0)
-                        {
-                            client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
-                            client.DefaultRequestHeaders.Add("Origin", "https://scholar.google.com");
-                        }
-                    }
-                    // Add a referrer to make it look more natural for other sites
-                    else if (attempt > 0)
-                    {
-                        client.DefaultRequestHeaders.Add("Referer", "https://www.google.com/");
-                    }
-
-                    Console.WriteLine($"[DEBUG] Attempt {attempt + 1} with {userAgents[attempt].Split(' ')[0]} browser simulation");
-
-                    var response = await client.GetAsync(url);
-                    
-                    Console.WriteLine($"[DEBUG] Response: {response.StatusCode} ({(int)response.StatusCode})");
-                    
-                    // Check if successful
-                    if (response.IsSuccessStatusCode)
-                    {
-                        // Read content as bytes first to handle compression properly
-                        var contentBytes = await response.Content.ReadAsByteArrayAsync();
-                        Console.WriteLine($"[DEBUG] Response content length: {contentBytes?.Length}");
-                        Console.WriteLine($"[DEBUG] Content encoding: {response.Content.Headers.ContentEncoding?.FirstOrDefault() ?? "none"}");
-                        
-                        string content;
-                        
-                        // Check content encoding and decompress if needed
-                        var encoding = response.Content.Headers.ContentEncoding?.FirstOrDefault()?.ToLowerInvariant();
-                        if (encoding == "gzip")
-                        {
-                            using var gzipStream = new System.IO.Compression.GZipStream(new MemoryStream(contentBytes), System.IO.Compression.CompressionMode.Decompress);
-                            using var reader = new StreamReader(gzipStream, System.Text.Encoding.UTF8);
-                            content = await reader.ReadToEndAsync();
-                            Console.WriteLine($"[DEBUG] Decompressed GZIP content length: {content?.Length}");
-                        }
-                        else if (encoding == "deflate")
-                        {
-                            using var deflateStream = new System.IO.Compression.DeflateStream(new MemoryStream(contentBytes), System.IO.Compression.CompressionMode.Decompress);
-                            using var reader = new StreamReader(deflateStream, System.Text.Encoding.UTF8);
-                            content = await reader.ReadToEndAsync();
-                            Console.WriteLine($"[DEBUG] Decompressed DEFLATE content length: {content?.Length}");
-                        }
-                        else if (encoding == "br")
-                        {
-                            using var brotliStream = new System.IO.Compression.BrotliStream(new MemoryStream(contentBytes), System.IO.Compression.CompressionMode.Decompress);
-                            using var reader = new StreamReader(brotliStream, System.Text.Encoding.UTF8);
-                            content = await reader.ReadToEndAsync();
-                            Console.WriteLine($"[DEBUG] Decompressed BROTLI content length: {content?.Length}");
-                        }
-                        else
-                        {
-                            // Try as regular string first
-                            content = await response.Content.ReadAsStringAsync();
-                            Console.WriteLine($"[DEBUG] Plain text content length: {content?.Length}");
-                        }
-                        
-                        Console.WriteLine($"[DEBUG] Final content starts with: {content?.Substring(0, Math.Min(200, content?.Length ?? 0))}");
-                        
-                        // Verify we got actual HTML content
-                        if (!string.IsNullOrEmpty(content) && 
-                            (content.Contains("<html", StringComparison.OrdinalIgnoreCase) || 
-                             content.Contains("<!doctype", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<head", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<body", StringComparison.OrdinalIgnoreCase) ||
-                             content.Contains("<title", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            Console.WriteLine($"[DEBUG] HTML validation passed for attempt {attempt + 1}");
-                            return content;
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[DEBUG] HTML validation failed for attempt {attempt + 1}. Content does not appear to be valid HTML");
-                        }
-                    }
-                    
-                    lastException = new Exception($"HTTP {(int)response.StatusCode} {response.StatusCode}: {response.ReasonPhrase}");
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                    Console.WriteLine($"[DEBUG] Attempt {attempt + 1} failed: {ex.Message}");
-                }
-
-                // Wait between attempts with longer delays
-                if (attempt < userAgents.Length - 1)
-                {
-                    await Task.Delay(2000 + (attempt * 1000)); // 2-5 second delays
-                }
-            }
-
-            // STEP 2: Only use ScraperAPI as fallback when direct access fails (to save tokens)
-            // This ensures we only pay for ScraperAPI when absolutely necessary
             try
             {
-                var scraperContent = await GetPageContentWithScraperAPI(url);
-                if (!string.IsNullOrEmpty(scraperContent))
+                Console.WriteLine($"[PERF] Starting content fetch for: {url}");
+                
+                // Performance optimization: Try multiple strategies in parallel with fast timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12)); // Reduced overall timeout
+                
+                // Create multiple fetch strategies to run in parallel
+                var tasks = new List<Task<string>>();
+                
+                // Strategy 1: Direct access with minimal headers (fastest)
+                tasks.Add(TryDirectAccess(url, cts.Token));
+                
+                // Strategy 2: Alternative URL patterns (for academic sites)
+                if (IsAcademicSite(url))
                 {
-                    return scraperContent;
+                    tasks.Add(TryAlternativeAcademicUrls(url, cts.Token));
                 }
-            }
-            catch (Exception scraperEx)
-            {
-                Console.WriteLine($"[DEBUG] ScraperAPI also failed: {scraperEx.Message}");
-            }
-
-            // If ScraperAPI failed, try enhanced alternative strategies
-            Console.WriteLine("[DEBUG] Trying enhanced alternative URL and access strategies...");
-            
-            // Strategy 1: Try alternative URL patterns
-            var altContent = await TryAlternativeUrlStrategies(url);
-            if (!string.IsNullOrEmpty(altContent))
-            {
-                return altContent;
-            }
-            
-            // Strategy 2: Try different proxy approaches
-            await TryProxyStrategies(url);
-            
-            // Strategy 3: Try different browser simulation approaches
-            var browserContent = await TryAdvancedBrowserSimulation(url);
-            if (!string.IsNullOrEmpty(browserContent))
-            {
-                return browserContent;
-            }
-            
-            // Strategy 4: Try minimal headers fallback
-            try
-            {
-                Console.WriteLine("[DEBUG] Trying fallback method with minimal headers...");
-                using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(30);
-                client.DefaultRequestHeaders.Clear();
                 
-                // Only essential headers to avoid detection
-                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-                client.DefaultRequestHeaders.Add("Accept", "*/*");
-                client.DefaultRequestHeaders.Add("Accept-Language", "vi");
+                // Strategy 3: Browser simulation (fallback)
+                tasks.Add(TryBrowserSimulation(url, cts.Token));
                 
-                var response = await client.GetAsync(url);
-                
-                if (response.IsSuccessStatusCode)
+                // Wait for first successful result
+                while (tasks.Count > 0)
                 {
-                    var content = await response.Content.ReadAsStringAsync();
-                    if (!string.IsNullOrEmpty(content) && content.Contains("<title", StringComparison.OrdinalIgnoreCase))
+                    var completedTask = await Task.WhenAny(tasks).ConfigureAwait(false);
+                    tasks.Remove(completedTask);
+                    
+                    try
                     {
-                        Console.WriteLine("[DEBUG] Fallback method succeeded!");
-                        return content;
+                        var result = await completedTask.ConfigureAwait(false);
+                        if (!string.IsNullOrEmpty(result))
+                        {
+                            Console.WriteLine($"[PERF] Content fetch succeeded in {stopwatch.ElapsedMilliseconds}ms");
+                            return result;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        lastException = ex;
+                        Console.WriteLine($"[PERF] Strategy failed: {ex.Message}");
                     }
                 }
+                
+                // If all direct methods fail, try ScraperAPI as last resort
+                Console.WriteLine($"[PERF] Các phương thức trực tiếp thất bại sau {stopwatch.ElapsedMilliseconds}ms, thử ScraperAPI");
+                return await GetPageContentWithScraperAPI(url).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[DEBUG] Fallback method also failed: {ex.Message}");
+                Console.WriteLine($"[PERF] All methods failed after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
+                throw new Exception($"Failed to fetch content for {url} after {stopwatch.ElapsedMilliseconds}ms", lastException ?? ex);
             }
-
-            // If all attempts failed, throw the last exception
-            throw new Exception($"Failed to fetch page content after {userAgents.Length} attempts. Last error: {lastException?.Message}");
         }
-
+        
+        /// <summary>
+        /// Fast direct access attempt with minimal headers
+        /// </summary>
+        private async Task<string> TryDirectAccess(string url, CancellationToken cancellationToken)
+        {
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(6); // Short timeout for speed
+            
+            // Minimal headers for fastest response
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            client.DefaultRequestHeaders.Add("Accept", "text/html");
+            
+            var response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(content) && content.Contains("<"))
+                {
+                    Console.WriteLine("[PERF] Direct access succeeded");
+                    return content;
+                }
+            }
+            
+            throw new Exception($"Direct access failed: {response.StatusCode}");
+        }
+        
+        /// <summary>
+        /// Try alternative URLs for academic sites
+        /// </summary>
+        private async Task<string> TryAlternativeAcademicUrls(string url, CancellationToken cancellationToken)
+        {
+            var alternatives = new List<string>();
+            
+            // ResearchGate alternatives
+            if (url.Contains("researchgate.net"))
+            {
+                alternatives.Add(url.Replace("www.researchgate.net", "m.researchgate.net"));
+                alternatives.Add(url.Replace("publication/", "profile/"));
+            }
+            
+            // arXiv alternatives
+            if (url.Contains("arxiv.org"))
+            {
+                if (url.Contains("/abs/"))
+                {
+                    alternatives.Add(url.Replace("/abs/", "/pdf/") + ".pdf");
+                }
+            }
+            
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(5);
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            
+            foreach (var altUrl in alternatives)
+            {
+                try
+                {
+                    var response = await client.GetAsync(altUrl, cancellationToken).ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        if (!string.IsNullOrEmpty(content) && content.Contains("<"))
+                        {
+                            Console.WriteLine($"[PERF] Alternative URL succeeded: {altUrl}");
+                            return content;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PERF] Alternative {altUrl} failed: {ex.Message}");
+                }
+            }
+            
+            throw new Exception("No alternative URLs succeeded");
+        }
+        
+        /// <summary>
+        /// Browser simulation with realistic headers
+        /// </summary>
+        private async Task<string> TryBrowserSimulation(string url, CancellationToken cancellationToken)
+        {
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(8);
+            
+            // Realistic browser headers
+            client.DefaultRequestHeaders.Add("User-Agent", 
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36");
+            client.DefaultRequestHeaders.Add("Accept", 
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+            client.DefaultRequestHeaders.Add("Accept-Language", "vi,en-US;q=0.9,en;q=0.8");
+            client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
+            client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
+            client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
+            client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
+            client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
+            
+            // Special handling for ResearchGate
+            if (url.Contains("researchgate.net"))
+            {
+                client.DefaultRequestHeaders.Add("Referer", "https://scholar.google.com/");
+            }
+            
+            var response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(content) && content.Contains("<"))
+                {
+                    Console.WriteLine("[PERF] Browser simulation succeeded");
+                    return content;
+                }
+            }
+            
+            throw new Exception($"Browser simulation failed: {response.StatusCode}");
+        }
+        
+        /// <summary>
+        /// Check if URL is from an academic site
+        /// </summary>
+        private bool IsAcademicSite(string url)
+        {
+            return url.Contains("researchgate.net") || 
+                   url.Contains("arxiv.org") || 
+                   url.Contains("ieee.org") || 
+                   url.Contains("springer.com") || 
+                   url.Contains("pubmed") || 
+                   url.Contains("scholar.google");
+        }
+            
+            // STEP 1: Always try direct access first to save ScraperAPI tokens
+        
         #region Website Detection Methods
         
         /// <summary>
@@ -1999,33 +1846,100 @@ namespace VUniBox.Services.Metadata
         private DocumentMetadataDto ExtractArxivMetadata(HtmlDocument doc, string url)
         {
             var metadata = new DocumentMetadataDto { URL = url, Source = "arXiv" };
+            
+            Console.WriteLine("[DEBUG] Starting arXiv-specific metadata extraction");
 
-            // Extract title
-            var titleElement = doc.DocumentNode.SelectSingleNode("//h1[@class='title mathjax']");
-            if (titleElement != null)
+            // Extract title - try multiple selectors
+            var titleSelectors = new[]
             {
-                metadata.Title = titleElement.InnerText?.Replace("Title:", "").Trim();
-            }
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='title mathjax']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
 
-            // Extract authors
-            var authorsElement = doc.DocumentNode.SelectSingleNode("//div[@class='authors']");
-            if (authorsElement != null)
+            foreach (var selector in titleSelectors)
             {
-                var authorLinks = authorsElement.SelectNodes(".//a");
-                if (authorLinks != null)
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
                 {
-                    var authors = authorLinks.Select(a => a.InnerText?.Trim()).Where(a => !string.IsNullOrEmpty(a)).ToList();
-                    metadata.Authors = string.Join(", ", authors);
-                    metadata.Author = authors.FirstOrDefault();
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        metadata.Title = title.Replace("Title:", "").Replace("[arXiv:", "").Trim();
+                        Console.WriteLine($"[DEBUG] arXiv title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
                 }
             }
 
-            // Extract abstract
-            var abstractElement = doc.DocumentNode.SelectSingleNode("//blockquote[@class='abstract mathjax']");
-            if (abstractElement != null)
+            // Extract authors - try citation meta first, then DOM
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
             {
-                metadata.Abstract = abstractElement.InnerText?.Replace("Abstract:", "").Trim();
-                metadata.Description = metadata.Abstract;
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] arXiv authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors
+                var authorsElement = doc.DocumentNode.SelectSingleNode("//div[@class='authors']");
+                if (authorsElement != null)
+                {
+                    var authorLinks = authorsElement.SelectNodes(".//a");
+                    if (authorLinks != null)
+                    {
+                        var authors = authorLinks.Select(a => a.InnerText?.Trim())
+                                                .Where(a => !string.IsNullOrEmpty(a))
+                                                .ToList();
+                        if (authors.Any())
+                        {
+                            metadata.Authors = string.Join(", ", authors);
+                            metadata.Author = authors.First();
+                            Console.WriteLine($"[DEBUG] arXiv authors via DOM: {metadata.Authors}");
+                        }
+                    }
+                }
+            }
+
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
+            {
+                "//meta[@name='citation_abstract']",
+                "//meta[@property='og:description']",
+                "//blockquote[@class='abstract mathjax']",
+                "//blockquote[contains(@class, 'abstract')]",
+                "//div[@class='abstract']"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        metadata.Abstract = abstractText.Replace("Abstract:", "").Trim();
+                        metadata.Description = metadata.Abstract;
+                        Console.WriteLine($"[DEBUG] arXiv abstract found via {selector}: {metadata.Abstract.Substring(0, Math.Min(100, metadata.Abstract.Length))}...");
+                        break;
+                    }
+                }
             }
 
             // Extract arXiv ID and set DOI-like identifier
@@ -2033,11 +1947,23 @@ namespace VUniBox.Services.Metadata
             if (arxivMatch.Success)
             {
                 metadata.DOI = $"arXiv:{arxivMatch.Groups[1].Value}";
+                Console.WriteLine($"[DEBUG] arXiv ID extracted: {metadata.DOI}");
+            }
+
+            // Extract subject/category
+            var subjectElement = doc.DocumentNode.SelectSingleNode("//td[@class='tablecell subjects']") ??
+                               doc.DocumentNode.SelectSingleNode("//span[@class='primary-subject']");
+            if (subjectElement != null)
+            {
+                metadata.Subject = subjectElement.InnerText?.Trim();
+                Console.WriteLine($"[DEBUG] arXiv subject: {metadata.Subject}");
             }
 
             metadata.Publisher = "arXiv";
+            metadata.Language = "en";
             metadata.RetrievedDate = DateTime.UtcNow;
             
+            Console.WriteLine("[DEBUG] arXiv metadata extraction completed");
             return metadata;
         }
 
@@ -2047,32 +1973,112 @@ namespace VUniBox.Services.Metadata
         private DocumentMetadataDto ExtractPubMedMetadata(HtmlDocument doc, string url)
         {
             var metadata = new DocumentMetadataDto { URL = url, Source = "PubMed" };
-
-            // Extract title
-            var titleElement = doc.DocumentNode.SelectSingleNode("//h1[@class='heading-title']") ??
-                              doc.DocumentNode.SelectSingleNode("//meta[@name='citation_title']");
             
-            if (titleElement != null)
+            Console.WriteLine("[DEBUG] Starting PubMed-specific metadata extraction");
+
+            // Extract title - prioritize OpenGraph and citation meta
+            var titleSelectors = new[]
             {
-                metadata.Title = titleElement.Name == "meta" 
-                    ? GetAttributeValue(titleElement, "content") 
-                    : titleElement.InnerText?.Trim();
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='heading-title']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up PubMed-specific suffixes
+                        metadata.Title = title.Replace("- PubMed", "").Replace("PubMed", "").Trim();
+                        Console.WriteLine($"[DEBUG] PubMed title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
             }
 
-            // Extract authors
+            // Extract authors - try citation meta first, then DOM
             var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
-            if (authorElements != null)
+            if (authorElements != null && authorElements.Any())
             {
-                var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
-                metadata.Authors = string.Join(", ", authors);
-                metadata.Author = authors.FirstOrDefault();
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] PubMed authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors for authors
+                var authorSelectors = new[]
+                {
+                    "//div[@class='authors-list']//a[@class='full-name']",
+                    "//div[contains(@class, 'authors')]//span[contains(@class, 'authors-list-item')]",
+                    "//div[@class='auths']//a"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] PubMed authors via DOM: {metadata.Authors}");
+                }
             }
 
             // Extract journal
-            var journalElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_journal_title']");
-            if (journalElement != null)
+            var journalSelectors = new[]
             {
-                metadata.Journal = GetAttributeValue(journalElement, "content");
+                "//meta[@name='citation_journal_title']",
+                "//meta[@name='citation_journal_abbrev']",
+                "//button[@id='full-view-journal-trigger']"
+            };
+
+            foreach (var selector in journalSelectors)
+            {
+                var journalElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (journalElement != null)
+                {
+                    var journal = journalElement.Name == "meta" 
+                        ? GetAttributeValue(journalElement, "content")
+                        : journalElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(journal))
+                    {
+                        metadata.Journal = journal;
+                        Console.WriteLine($"[DEBUG] PubMed journal via {selector}: {metadata.Journal}");
+                        break;
+                    }
+                }
             }
 
             // Extract DOI
@@ -2080,30 +2086,72 @@ namespace VUniBox.Services.Metadata
             if (doiElement != null)
             {
                 metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] PubMed DOI: {metadata.DOI}");
             }
 
             // Extract publication date
-            var dateElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_publication_date']");
-            if (dateElement != null && DateTime.TryParse(GetAttributeValue(dateElement, "content"), out var pubDate))
+            var dateSelectors = new[]
             {
-                metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//span[@class='cit']"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = dateElement.Name == "meta" 
+                        ? GetAttributeValue(dateElement, "content")
+                        : dateElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] PubMed date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
             }
 
-            // Extract abstract
-            var abstractElement = doc.DocumentNode.SelectSingleNode("//div[@class='abstract-content selected']") ??
-                                 doc.DocumentNode.SelectSingleNode("//meta[@name='description']");
-            
-            if (abstractElement != null)
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
             {
-                metadata.Abstract = abstractElement.Name == "meta" 
-                    ? GetAttributeValue(abstractElement, "content") 
-                    : abstractElement.InnerText?.Trim();
-                metadata.Description = metadata.Abstract;
+                "//meta[@property='og:description']",
+                "//meta[@name='citation_abstract']",
+                "//meta[@name='description']",
+                "//div[@class='abstract-content selected']",
+                "//div[@id='enc-abstract']//p",
+                "//div[contains(@class, 'abstract')]"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        // Clean up PubMed-specific suffixes
+                        abstractText = abstractText.Replace("PubMed", "").Trim();
+                        metadata.Abstract = abstractText;
+                        metadata.Description = abstractText;
+                        Console.WriteLine($"[DEBUG] PubMed abstract found via {selector}: {abstractText.Substring(0, Math.Min(100, abstractText.Length))}...");
+                        break;
+                    }
+                }
             }
 
             metadata.Publisher = "PubMed";
+            metadata.Language = "en";
             metadata.RetrievedDate = DateTime.UtcNow;
             
+            Console.WriteLine("[DEBUG] PubMed metadata extraction completed");
             return metadata;
         }
 
@@ -2113,34 +2161,109 @@ namespace VUniBox.Services.Metadata
         private DocumentMetadataDto ExtractIEEEMetadata(HtmlDocument doc, string url)
         {
             var metadata = new DocumentMetadataDto { URL = url, Source = "IEEE Xplore" };
-
-            // Extract title
-            var titleElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_title']") ??
-                              doc.DocumentNode.SelectSingleNode("//h1[@class='document-title']");
             
-            if (titleElement != null)
+            Console.WriteLine("[DEBUG] Starting IEEE-specific metadata extraction");
+
+            // Extract title - prioritize OpenGraph and citation meta
+            var titleSelectors = new[]
             {
-                metadata.Title = titleElement.Name == "meta" 
-                    ? GetAttributeValue(titleElement, "content") 
-                    : titleElement.InnerText?.Trim();
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='document-title']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up IEEE-specific prefixes
+                        metadata.Title = title.Replace("IEEE Xplore", "").Replace("| IEEE", "").Trim();
+                        Console.WriteLine($"[DEBUG] IEEE title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
             }
 
-            // Extract authors
+            // Extract authors - try citation meta first, then DOM
             var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
-            if (authorElements != null)
+            if (authorElements != null && authorElements.Any())
             {
-                var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
-                metadata.Authors = string.Join(", ", authors);
-                metadata.Author = authors.FirstOrDefault();
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] IEEE authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors for authors
+                var authorSelectors = new[]
+                {
+                    "//div[contains(@class, 'authors')]//span[contains(@class, 'author-name')]",
+                    "//div[@class='authors-info']//a",
+                    "//span[@class='authors-list']//a"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] IEEE authors via DOM: {metadata.Authors}");
+                }
             }
 
             // Extract conference/journal
-            var venueElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_conference_title']") ??
-                              doc.DocumentNode.SelectSingleNode("//meta[@name='citation_journal_title']");
-            
-            if (venueElement != null)
+            var venueSelectors = new[]
             {
-                metadata.Journal = GetAttributeValue(venueElement, "content");
+                "//meta[@name='citation_conference_title']",
+                "//meta[@name='citation_journal_title']",
+                "//meta[@property='og:site_name']"
+            };
+
+            foreach (var selector in venueSelectors)
+            {
+                var venueElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (venueElement != null)
+                {
+                    var venue = GetAttributeValue(venueElement, "content");
+                    if (!string.IsNullOrEmpty(venue))
+                    {
+                        metadata.Journal = venue;
+                        Console.WriteLine($"[DEBUG] IEEE venue via {selector}: {metadata.Journal}");
+                        break;
+                    }
+                }
             }
 
             // Extract DOI
@@ -2148,30 +2271,68 @@ namespace VUniBox.Services.Metadata
             if (doiElement != null)
             {
                 metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] IEEE DOI: {metadata.DOI}");
             }
 
             // Extract publication date
-            var dateElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_publication_date']");
-            if (dateElement != null && DateTime.TryParse(GetAttributeValue(dateElement, "content"), out var pubDate))
+            var dateSelectors = new[]
             {
-                metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//meta[@name='citation_online_date']"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = GetAttributeValue(dateElement, "content");
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] IEEE date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
             }
 
-            // Extract abstract
-            var abstractElement = doc.DocumentNode.SelectSingleNode("//div[@class='abstract-text']") ??
-                                 doc.DocumentNode.SelectSingleNode("//meta[@name='description']");
-            
-            if (abstractElement != null)
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
             {
-                metadata.Abstract = abstractElement.Name == "meta" 
-                    ? GetAttributeValue(abstractElement, "content") 
-                    : abstractElement.InnerText?.Trim();
-                metadata.Description = metadata.Abstract;
+                "//meta[@property='og:description']",
+                "//meta[@name='citation_abstract']",
+                "//meta[@name='description']",
+                "//div[@class='abstract-text']",
+                "//div[contains(@class, 'abstract')]"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        // Clean up IEEE-specific suffixes
+                        abstractText = abstractText.Replace("IEEE Xplore", "").Trim();
+                        metadata.Abstract = abstractText;
+                        metadata.Description = abstractText;
+                        Console.WriteLine($"[DEBUG] IEEE abstract found via {selector}: {abstractText.Substring(0, Math.Min(100, abstractText.Length))}...");
+                        break;
+                    }
+                }
             }
 
             metadata.Publisher = "IEEE";
+            metadata.Language = "en";
             metadata.RetrievedDate = DateTime.UtcNow;
             
+            Console.WriteLine("[DEBUG] IEEE metadata extraction completed");
             return metadata;
         }
 
@@ -2181,32 +2342,112 @@ namespace VUniBox.Services.Metadata
         private DocumentMetadataDto ExtractSpringerMetadata(HtmlDocument doc, string url)
         {
             var metadata = new DocumentMetadataDto { URL = url, Source = "Springer" };
-
-            // Extract title
-            var titleElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_title']") ??
-                              doc.DocumentNode.SelectSingleNode("//h1[@class='c-article-title']");
             
-            if (titleElement != null)
+            Console.WriteLine("[DEBUG] Starting Springer-specific metadata extraction");
+
+            // Extract title - prioritize OpenGraph and citation meta
+            var titleSelectors = new[]
             {
-                metadata.Title = titleElement.Name == "meta" 
-                    ? GetAttributeValue(titleElement, "content") 
-                    : titleElement.InnerText?.Trim();
+                "//meta[@property='og:title']",
+                "//meta[@name='citation_title']",
+                "//h1[@class='c-article-title']",
+                "//h1[contains(@class, 'title')]",
+                "//title"
+            };
+
+            foreach (var selector in titleSelectors)
+            {
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (titleElement != null)
+                {
+                    var title = titleElement.Name == "meta" 
+                        ? GetAttributeValue(titleElement, "content") 
+                        : titleElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(title) && title.Length > 5)
+                    {
+                        // Clean up Springer-specific prefixes
+                        metadata.Title = title.Replace("| SpringerLink", "").Replace("Springer", "").Trim();
+                        Console.WriteLine($"[DEBUG] Springer title extracted via {selector}: {metadata.Title}");
+                        break;
+                    }
+                }
             }
 
-            // Extract authors
+            // Extract authors - try citation meta first, then DOM
             var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
-            if (authorElements != null)
+            if (authorElements != null && authorElements.Any())
             {
-                var authors = authorElements.Select(e => GetAttributeValue(e, "content")).Where(a => !string.IsNullOrEmpty(a)).ToList();
-                metadata.Authors = string.Join(", ", authors);
-                metadata.Author = authors.FirstOrDefault();
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Springer authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to DOM selectors for authors
+                var authorSelectors = new[]
+                {
+                    "//div[contains(@class, 'c-article-authors')]//a[contains(@class, 'c-author-name')]",
+                    "//ol[contains(@class, 'c-article-author-list')]//span[@class='c-article-author-name']",
+                    "//div[@class='authors-list']//a"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.InnerText?.Trim();
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Springer authors via DOM: {metadata.Authors}");
+                }
             }
 
             // Extract journal
-            var journalElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_journal_title']");
-            if (journalElement != null)
+            var journalSelectors = new[]
             {
-                metadata.Journal = GetAttributeValue(journalElement, "content");
+                "//meta[@name='citation_journal_title']",
+                "//meta[@property='og:site_name']",
+                "//span[@class='JournalTitle']"
+            };
+
+            foreach (var selector in journalSelectors)
+            {
+                var journalElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (journalElement != null)
+                {
+                    var journal = journalElement.Name == "meta" 
+                        ? GetAttributeValue(journalElement, "content")
+                        : journalElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(journal))
+                    {
+                        metadata.Journal = journal;
+                        Console.WriteLine($"[DEBUG] Springer journal via {selector}: {metadata.Journal}");
+                        break;
+                    }
+                }
             }
 
             // Extract DOI
@@ -2214,18 +2455,69 @@ namespace VUniBox.Services.Metadata
             if (doiElement != null)
             {
                 metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] Springer DOI: {metadata.DOI}");
             }
 
             // Extract publication date
-            var dateElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_publication_date']");
-            if (dateElement != null && DateTime.TryParse(GetAttributeValue(dateElement, "content"), out var pubDate))
+            var dateSelectors = new[]
             {
-                metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//meta[@name='citation_online_date']"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = GetAttributeValue(dateElement, "content");
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] Springer date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
+            }
+
+            // Extract abstract - multiple approaches
+            var abstractSelectors = new[]
+            {
+                "//meta[@property='og:description']",
+                "//meta[@name='citation_abstract']",
+                "//meta[@name='description']",
+                "//div[@class='c-article__section']//div[@id='Abs1-content']",
+                "//section[@class='Abstract']//p",
+                "//div[contains(@class, 'abstract')]"
+            };
+
+            foreach (var selector in abstractSelectors)
+            {
+                var abstractElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (abstractElement != null)
+                {
+                    var abstractText = abstractElement.Name == "meta" 
+                        ? GetAttributeValue(abstractElement, "content")
+                        : abstractElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(abstractText) && abstractText.Length > 50)
+                    {
+                        // Clean up Springer-specific suffixes
+                        abstractText = abstractText.Replace("SpringerLink", "").Trim();
+                        metadata.Abstract = abstractText;
+                        metadata.Description = abstractText;
+                        Console.WriteLine($"[DEBUG] Springer abstract found via {selector}: {abstractText.Substring(0, Math.Min(100, abstractText.Length))}...");
+                        break;
+                    }
+                }
             }
 
             metadata.Publisher = "Springer";
+            metadata.Language = "en";
             metadata.RetrievedDate = DateTime.UtcNow;
             
+            Console.WriteLine("[DEBUG] Springer metadata extraction completed");
             return metadata;
         }
 
@@ -2358,19 +2650,28 @@ namespace VUniBox.Services.Metadata
             Console.WriteLine($"[DEBUG] ExtractStandardWebMetadata called for: {url}");
             var metadata = new DocumentMetadataDto { URL = url };
 
-            // Extract title
+            // Determine source from URL
+            var uri = new Uri(url);
+            var domain = uri.Host.ToLowerInvariant();
+            metadata.Source = domain.Replace("www.", "").Split('.')[0];
+
+            // Enhanced title extraction with multiple strategies
             var titleSelectors = new[]
             {
-                "meta[property='og:title']",
-                "meta[name='twitter:title']",
-                "title",
-                "h1"
+                "//meta[@property='og:title']",
+                "//meta[@name='twitter:title']", 
+                "//meta[@name='citation_title']",
+                "//title",
+                "//h1[contains(@class, 'title')]",
+                "//h1[@class='entry-title']",
+                "//h1[@class='article-title']",
+                "//h1"
             };
 
-            Console.WriteLine("[DEBUG] Extracting title using standard selectors...");
+            Console.WriteLine("[DEBUG] Extracting title using enhanced selectors...");
             foreach (var selector in titleSelectors)
             {
-                var titleElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
+                var titleElement = doc.DocumentNode.SelectSingleNode(selector);
                 Console.WriteLine($"[DEBUG] Title selector '{selector}' found: {titleElement != null}");
                 
                 if (titleElement != null)
@@ -2382,6 +2683,8 @@ namespace VUniBox.Services.Metadata
                     Console.WriteLine($"[DEBUG] Extracted title: '{title}' (length: {title?.Length ?? 0})");
                     if (!string.IsNullOrEmpty(title) && title.Length > 5)
                     {
+                        // Clean up common website suffixes
+                        title = CleanTitle(title, domain);
                         metadata.Title = title;
                         Console.WriteLine($"[DEBUG] Title accepted: {title}");
                         break;
@@ -2389,92 +2692,214 @@ namespace VUniBox.Services.Metadata
                 }
             }
 
-            // Extract description/abstract
+            // Enhanced description/abstract extraction
             Console.WriteLine("[DEBUG] Extracting description...");
             var descriptionSelectors = new[]
             {
-                "meta[property='og:description']",
-                "meta[name='description']",
-                "meta[name='twitter:description']"
+                "//meta[@property='og:description']",
+                "//meta[@name='description']",
+                "//meta[@name='twitter:description']",
+                "//meta[@name='citation_abstract']",
+                "//div[contains(@class, 'abstract')]",
+                "//div[contains(@class, 'summary')]",
+                "//div[contains(@class, 'excerpt')]",
+                "//p[contains(@class, 'description')]"
             };
 
             foreach (var selector in descriptionSelectors)
             {
-                var descElement = doc.DocumentNode.SelectSingleNode($"//{selector}");
+                var descElement = doc.DocumentNode.SelectSingleNode(selector);
                 Console.WriteLine($"[DEBUG] Description selector '{selector}' found: {descElement != null}");
+                
                 if (descElement != null)
                 {
-                    var description = GetAttributeValue(descElement, "content");
-                    Console.WriteLine($"[DEBUG] Description content: '{description?.Substring(0, Math.Min(100, description?.Length ?? 0))}...'");
-                    if (!string.IsNullOrEmpty(description))
+                    var description = descElement.Name == "meta" 
+                        ? GetAttributeValue(descElement, "content") 
+                        : descElement.InnerText?.Trim();
+                    
+                    Console.WriteLine($"[DEBUG] Extracted description: '{description?.Substring(0, Math.Min(100, description?.Length ?? 0))}...' (length: {description?.Length ?? 0})");
+                    if (!string.IsNullOrEmpty(description) && description.Length > 30)
                     {
                         metadata.Description = description;
                         metadata.Abstract = description;
+                        Console.WriteLine($"[DEBUG] Description accepted (length: {description.Length})");
                         break;
                     }
                 }
             }
 
-            // Extract site name/source
-            Console.WriteLine("[DEBUG] Extracting site name...");
-            var siteElement = doc.DocumentNode.SelectSingleNode("//meta[@property='og:site_name']");
-            Console.WriteLine($"[DEBUG] Site name element found: {siteElement != null}");
-            if (siteElement != null)
+            // Enhanced author extraction
+            Console.WriteLine("[DEBUG] Extracting authors...");
+            var authorElements = doc.DocumentNode.SelectNodes("//meta[@name='citation_author']");
+            if (authorElements != null && authorElements.Any())
             {
-                metadata.Source = GetAttributeValue(siteElement, "content");
-                metadata.Publisher = metadata.Source;
-                Console.WriteLine($"[DEBUG] Site name: {metadata.Source}");
-            }
-
-            // Extract author
-            Console.WriteLine("[DEBUG] Extracting author...");
-            var authorElement = doc.DocumentNode.SelectSingleNode("//meta[@name='author']");
-            Console.WriteLine($"[DEBUG] Author element found: {authorElement != null}");
-            if (authorElement != null)
-            {
-                var author = GetAttributeValue(authorElement, "content");
-                Console.WriteLine($"[DEBUG] Author: {author}");
-                if (!string.IsNullOrEmpty(author))
+                var authors = authorElements.Select(e => GetAttributeValue(e, "content"))
+                                          .Where(a => !string.IsNullOrEmpty(a))
+                                          .ToList();
+                if (authors.Any())
                 {
-                    metadata.Author = author;
-                    metadata.Authors = author;
+                    metadata.Authors = string.Join(", ", authors);
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Authors via citation meta: {metadata.Authors}");
+                }
+            }
+            else
+            {
+                // Fallback to other author selectors
+                var authorSelectors = new[]
+                {
+                    "//meta[@name='author']",
+                    "//meta[@property='article:author']",
+                    "//span[contains(@class, 'author')]",
+                    "//div[contains(@class, 'author')]",
+                    "//a[contains(@class, 'author')]"
+                };
+
+                var authors = new List<string>();
+                foreach (var selector in authorSelectors)
+                {
+                    var authorElems = doc.DocumentNode.SelectNodes(selector);
+                    if (authorElems != null)
+                    {
+                        foreach (var elem in authorElems)
+                        {
+                            var author = elem.Name == "meta" 
+                                ? GetAttributeValue(elem, "content")
+                                : elem.InnerText?.Trim();
+                            
+                            if (!string.IsNullOrEmpty(author) && author.Length > 2 && author.Length < 100)
+                            {
+                                authors.Add(author);
+                            }
+                        }
+                        if (authors.Any()) break;
+                    }
+                }
+
+                if (authors.Any())
+                {
+                    metadata.Authors = string.Join(", ", authors.Distinct());
+                    metadata.Author = authors.First();
+                    Console.WriteLine($"[DEBUG] Authors via DOM: {metadata.Authors}");
                 }
             }
 
-            // Extract keywords
-            Console.WriteLine("[DEBUG] Extracting keywords...");
-            var keywordsElement = doc.DocumentNode.SelectSingleNode("//meta[@name='keywords']");
-            Console.WriteLine($"[DEBUG] Keywords element found: {keywordsElement != null}");
-            if (keywordsElement != null)
+            // Enhanced publication date extraction
+            Console.WriteLine("[DEBUG] Extracting publication date...");
+            var dateSelectors = new[]
             {
-                metadata.Keywords = GetAttributeValue(keywordsElement, "content");
-                Console.WriteLine($"[DEBUG] Keywords: {metadata.Keywords}");
+                "//meta[@name='citation_publication_date']",
+                "//meta[@name='citation_date']",
+                "//meta[@property='article:published_time']",
+                "//meta[@name='date']",
+                "//time[@class='published']",
+                "//span[contains(@class, 'date')]"
+            };
+
+            foreach (var selector in dateSelectors)
+            {
+                var dateElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (dateElement != null)
+                {
+                    var dateStr = dateElement.Name == "meta" 
+                        ? GetAttributeValue(dateElement, "content")
+                        : dateElement.GetAttributeValue("datetime", "") ?? dateElement.InnerText?.Trim();
+                    
+                    if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var pubDate))
+                    {
+                        metadata.PublicationDate = DateOnly.FromDateTime(pubDate);
+                        Console.WriteLine($"[DEBUG] Publication date via {selector}: {dateStr}");
+                        break;
+                    }
+                }
             }
 
-            // Extract language
-            Console.WriteLine("[DEBUG] Extracting language...");
-            var langElement = doc.DocumentNode.SelectSingleNode("//html[@lang]");
-            metadata.Language = langElement != null ? GetAttributeValue(langElement, "lang") ?? "vi" : "vi";
-            Console.WriteLine($"[DEBUG] Language: {metadata.Language}");
+            // Enhanced journal/publisher extraction
+            Console.WriteLine("[DEBUG] Extracting journal/publisher...");
+            var publisherSelectors = new[]
+            {
+                "//meta[@name='citation_journal_title']",
+                "//meta[@name='citation_publisher']",
+                "//meta[@property='og:site_name']",
+                "//meta[@name='publisher']"
+            };
 
-            // Set retrieved date
+            foreach (var selector in publisherSelectors)
+            {
+                var pubElement = doc.DocumentNode.SelectSingleNode(selector);
+                if (pubElement != null)
+                {
+                    var publisher = GetAttributeValue(pubElement, "content");
+                    if (!string.IsNullOrEmpty(publisher))
+                    {
+                        if (selector.Contains("journal"))
+                        {
+                            metadata.Journal = publisher;
+                        }
+                        else
+                        {
+                            metadata.Publisher = publisher;
+                        }
+                        Console.WriteLine($"[DEBUG] Publisher/Journal via {selector}: {publisher}");
+                        break;
+                    }
+                }
+            }
+
+            // DOI extraction
+            var doiElement = doc.DocumentNode.SelectSingleNode("//meta[@name='citation_doi']");
+            if (doiElement != null)
+            {
+                metadata.DOI = GetAttributeValue(doiElement, "content");
+                Console.WriteLine($"[DEBUG] DOI found: {metadata.DOI}");
+            }
+
+            // Set language (default to English for most academic content)
+            metadata.Language = "en";
             metadata.RetrievedDate = DateTime.UtcNow;
 
-            // Fallback for title
-            if (string.IsNullOrEmpty(metadata.Title))
+            // If no source was set, use the domain
+            if (string.IsNullOrEmpty(metadata.Source))
             {
-                var uri = new Uri(url);
-                metadata.Title = $"Tài liệu từ {uri.Host}";
-                Console.WriteLine($"[DEBUG] Using fallback title: {metadata.Title}");
+                metadata.Source = domain;
             }
 
             Console.WriteLine($"[DEBUG] ExtractStandardWebMetadata completed. Final metadata:");
             Console.WriteLine($"[DEBUG] - Title: {metadata.Title}");
-            Console.WriteLine($"[DEBUG] - Description: {metadata.Description?.Substring(0, Math.Min(100, metadata.Description?.Length ?? 0))}...");
+            Console.WriteLine($"[DEBUG] - Authors: {metadata.Authors}");
+            Console.WriteLine($"[DEBUG] - Description length: {metadata.Description?.Length ?? 0}");
             Console.WriteLine($"[DEBUG] - Source: {metadata.Source}");
-            Console.WriteLine($"[DEBUG] - Author: {metadata.Author}");
 
             return metadata;
+        }
+
+        /// <summary>
+        /// Cleans title by removing common website suffixes and formatting.
+        /// </summary>
+        private string CleanTitle(string title, string domain)
+        {
+            if (string.IsNullOrEmpty(title)) return title;
+
+            // Common suffixes to remove
+            var suffixesToRemove = new[]
+            {
+                $" | {domain}",
+                $" - {domain}",
+                " | Home",
+                " - Home",
+                " | Homepage",
+                " - Homepage"
+            };
+
+            foreach (var suffix in suffixesToRemove)
+            {
+                if (title.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    title = title.Substring(0, title.Length - suffix.Length);
+                }
+            }
+
+            return title.Trim();
         }
 
         #endregion
