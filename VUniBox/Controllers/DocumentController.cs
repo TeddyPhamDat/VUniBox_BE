@@ -449,6 +449,41 @@ namespace VUniBox.Controllers
                 return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
             }
         }
+
+        /// <summary>
+        /// Updates document metadata fields such as Year, Author, Publisher, and Title.
+        /// </summary>
+        /// <param name="request">The update request.</param>
+        /// <returns>An <see cref="IActionResult"/> indicating success or failure.</returns>
+        [HttpPut("update")]
+        public async Task<IActionResult> UpdateDocument([FromBody] DocumentUpdateRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(ApiResponse<object>.Fail("Yêu cầu không hợp lệ", 400));
+
+                var success = await _documentLifecycleService.UpdateDocumentInfoAsync(request);
+
+                if (success)
+                {
+                    return Ok(ApiResponse<object>.Success(new
+                    {
+                        request.DocumentId,
+                        Message = "Tài liệu đã được cập nhật thành công"
+                    }, "Cập nhật tài liệu thành công"));
+                }
+                else
+                {
+                    return NotFound(ApiResponse<object>.Fail("Không tìm thấy tài liệu hoặc bạn không có quyền cập nhật", 404));
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<object>.Fail($"Lỗi hệ thống: {ex.Message}", 500));
+            }
+        }
+
     }
 }
 

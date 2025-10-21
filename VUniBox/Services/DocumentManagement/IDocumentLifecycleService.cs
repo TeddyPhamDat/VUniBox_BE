@@ -1,5 +1,6 @@
 using VUniBox.Models;
 using VUniBox.Models.DTO;
+using VUniBox.Models.DTO.Request;
 using VUniBox.Models.Enum;
 
 namespace VUniBox.Services.DocumentManagement
@@ -99,5 +100,14 @@ namespace VUniBox.Services.DocumentManagement
         /// </summary>
         /// <returns>True if the auto-cleanup was successful, false otherwise.</returns>
         Task<bool> AutoCleanTrashAsync();
+
+        /// <summary>
+        /// Updates document info (Title, Author, Publisher, Year).
+        /// </summary>
+        /// <param name="request">The document update request.</param>
+        /// <returns>True if updated successfully, otherwise false.</returns>
+        Task<bool> UpdateDocumentInfoAsync(DocumentUpdateRequest request);
+
+
     }
 }

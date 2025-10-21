@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using VUniBox.DBContext;
 using VUniBox.Models;
 using VUniBox.Models.DTO;
+using VUniBox.Models.DTO.Request;
 using VUniBox.Models.Enum;
 using VUniBox.Services.Usage;
 
@@ -531,6 +532,37 @@ namespace VUniBox.Services.DocumentManagement
             {
                 throw new Exception($"Error in auto clean trash: {ex.Message}");
             }
+        }
+
+
+        /// <summary>
+        /// Updates document info (Title, Author, Publisher, Year).
+        /// </summary>
+        /// <param name="request">The document update request.</param>
+        /// <returns>True if updated successfully, otherwise false.</returns>
+        public async Task<bool> UpdateDocumentInfoAsync(DocumentUpdateRequest request)
+        {
+            var document = await _context.Documents
+                .FirstOrDefaultAsync(d => d.DocumentId == request.DocumentId && d.UserId == request.UserId);
+
+            if (document == null)
+                return false;
+
+            // Cập nhật các trường được phép chỉnh sửa
+            if (!string.IsNullOrEmpty(request.Title))
+                document.Title = request.Title;
+
+            if (!string.IsNullOrEmpty(request.Author))
+                document.Author = request.Author;
+
+            if (!string.IsNullOrEmpty(request.Publisher))
+                document.Publisher = request.Publisher;
+
+            if (request.Year.HasValue)
+                document.Year = request.Year.Value;
+
+            await _context.SaveChangesAsync();
+            return true;
         }
     }
 }
