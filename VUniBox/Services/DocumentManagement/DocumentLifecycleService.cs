@@ -561,6 +561,9 @@ namespace VUniBox.Services.DocumentManagement
             if (request.Year.HasValue)
                 document.Year = request.Year.Value;
 
+            if (!string.IsNullOrEmpty(request.Doi))
+                document.Doi = request.Doi;
+
             await _context.SaveChangesAsync();
             return true;
         }
