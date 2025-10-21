@@ -201,6 +201,33 @@ namespace VUniBox.Controllers
         }
 
         /// <summary>
+        /// Retrieves a document by its ID, including citations and storage details.
+        /// </summary>
+        /// <param name="documentId">The ID of the document.</param>
+        /// <returns>The document entity if found, otherwise null.</returns>
+        [HttpGet("edit/{documentId}")]
+        public async Task<IActionResult> GetDocumentForEdit(int documentId)
+        {
+            var doc = await _documentLifecycleService.GetDocumentByIdAsync(documentId);
+            if (doc == null)
+                return NotFound("Document not found.");
+
+            var response = new
+            {
+                doc.DocumentId,
+                doc.UserId,
+                doc.Title,
+                doc.Author,
+                doc.Publisher,
+                doc.Year,
+                doc.Doi
+            };
+
+            return Ok(response);
+        }
+
+
+        /// <summary>
         /// Retrieves a summary of folders with document counts by type.
         /// </summary>
         /// <param name="userId">The ID of the user.</param>
