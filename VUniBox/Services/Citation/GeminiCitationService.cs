@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 
@@ -39,7 +40,7 @@ namespace VUniBox.Services.Citation
                         return FormatAuthorName(profileName);
                     }
                 }
-                
+
                 // ResearchGate publication extraction
                 if (url.Contains("researchgate.net/publication/"))
                 {
@@ -50,7 +51,7 @@ namespace VUniBox.Services.Citation
                         return FormatAuthorName(authorPart);
                     }
                 }
-                
+
                 // Domain-based fallbacks
                 if (url.Contains("ieee.org"))
                     return "IEEE Research Team";
@@ -61,7 +62,7 @@ namespace VUniBox.Services.Citation
                 if (url.Contains("arxiv.org"))
                     return "arXiv Contributors";
             }
-            
+
             // Title-based generation (simple approach)
             if (!string.IsNullOrWhiteSpace(title))
             {
@@ -72,7 +73,7 @@ namespace VUniBox.Services.Citation
                 if (title.ToLower().Contains("computer science"))
                     return "Computer Science Researchers";
             }
-            
+
             return "Academic Authors"; // Last resort, still better than "Unknown Author"
         }
 
@@ -82,10 +83,10 @@ namespace VUniBox.Services.Citation
         private string FormatAuthorName(string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return "Academic Authors";
-            
+
             // Clean up the name
             name = name.Trim().Replace("_", " ").Replace("-", " ");
-            
+
             // Capitalize properly
             var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < words.Length; i++)
@@ -95,7 +96,7 @@ namespace VUniBox.Services.Citation
                     words[i] = char.ToUpper(words[i][0]) + words[i].Substring(1).ToLower();
                 }
             }
-            
+
             return string.Join(" ", words);
         }
 
@@ -145,22 +146,22 @@ namespace VUniBox.Services.Citation
 
             // First clean AI artifacts
             title = CleanAIGeneratedTitle(title);
-            
+
             // If title already looks properly formatted (has mixed case), keep it as is
             if (title != title.ToUpper() && title != title.ToLower() && char.IsUpper(title[0]))
             {
                 return title;
             }
-            
+
             // Convert to sentence case (first letter capitalized, rest lowercase except for proper nouns)
             var words = title.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var result = new List<string>();
-            
+
             for (int i = 0; i < words.Length; i++)
             {
                 var word = words[i].Trim();
                 if (string.IsNullOrEmpty(word)) continue;
-                
+
                 if (i == 0)
                 {
                     // First word is always capitalized
@@ -179,7 +180,7 @@ namespace VUniBox.Services.Citation
                     }
                 }
             }
-            
+
             return string.Join(" ", result);
         }
 
@@ -189,20 +190,20 @@ namespace VUniBox.Services.Citation
         private bool IsProperNoun(string word)
         {
             if (string.IsNullOrWhiteSpace(word)) return false;
-            
+
             word = word.ToLower();
-            
+
             // Common proper nouns and important terms that should be capitalized
             var properNouns = new HashSet<string>
             {
-                "ai", "artificial", "intelligence", "covid", "covid-19", "api", "http", "https", 
+                "ai", "artificial", "intelligence", "covid", "covid-19", "api", "http", "https",
                 "doi", "isbn", "issn", "ieee", "acm", "springer", "elsevier", "researchgate",
                 "arxiv", "google", "microsoft", "amazon", "facebook", "twitter", "linkedin",
                 "vietnam", "vietnamese", "america", "american", "china", "chinese", "japan", "japanese",
                 "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"
             };
-            
-            return properNouns.Contains(word) || 
+
+            return properNouns.Contains(word) ||
                    word.Length <= 3 && word.All(char.IsUpper); // Acronyms
         }
 
@@ -223,6 +224,25 @@ namespace VUniBox.Services.Citation
             Console.WriteLine($"[GeminiCitationService] Generating citation for style: {style}");
             Console.WriteLine($"[GeminiCitationService] Input data - Title: {title}, Authors: {authors}, Year: {year}, PublicationDate: {publicationDate}");
 
+
+            url = url?.Trim() ?? "";
+            doi = doi?.Trim() ?? "";
+
+            // Remove URL if it’s just a DOI link
+            if (!string.IsNullOrEmpty(url) && url.Contains("doi.org", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("[GeminiCitationService] Detected DOI inside URL, clearing URL to avoid duplication");
+                url = "";
+            }
+
+            // Also sanitize DOI — in case it already contains full link
+            if (!string.IsNullOrEmpty(doi) && doi.Contains("doi.org", StringComparison.OrdinalIgnoreCase))
+            {
+                // Extract only the DOI suffix (e.g., "10.xxxx/xxxx")
+                var idx = doi.LastIndexOf("doi.org/", StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                    doi = doi.Substring(idx + 8); // keep only the part after "doi.org/"
+            }
             // For now, always use fallback for consistent results
             if (!_useAI)
             {
@@ -253,7 +273,7 @@ namespace VUniBox.Services.Citation
             // Extract year from multiple sources
             var effectiveYear = ExtractYear(year, publicationDate);
             var accessDate = DateTime.Now.ToString("MMMM dd, yyyy");
-            
+
             Console.WriteLine($"[GeminiCitationService] Effective year: {effectiveYear}, Access date: {accessDate}");
 
             // Clean inputs
@@ -337,13 +357,13 @@ namespace VUniBox.Services.Citation
         {
             // Ensure we always have a valid year - should not be null after ExtractYear changes
             var yearStr = year?.ToString() ?? DateTime.Now.Year.ToString();
-            
+
             // Format APA citation according to academic standards
             var authorPart = FormatAuthorsAPA(authors);
-            
+
             // Format title with proper capitalization (only first word and proper nouns capitalized)
             var formattedTitle = FormatTitleAPA(title);
-            
+
             // Build the formatted citation with publisher and volume/issue/pages
             string formatted;
             var citationParts = new List<string> { $"{authorPart} ({yearStr})", formattedTitle };
@@ -355,16 +375,22 @@ namespace VUniBox.Services.Citation
             }
 
             var volIssuePages = "";
-            // Add volume/issue/pages information if available
+
+            // Volume
             if (!string.IsNullOrEmpty(volume))
             {
-                volIssuePages = $"{volume}";
-                
-                if (!string.IsNullOrEmpty(issue))
+                volIssuePages = volume;
+
+                // Issue: chỉ thêm nếu không phải placeholder
+                if (!string.IsNullOrEmpty(issue) &&
+                    !issue.Equals("string", StringComparison.OrdinalIgnoreCase) &&
+                    !issue.Equals("no", StringComparison.OrdinalIgnoreCase))
                 {
                     volIssuePages += $"({issue})";
                 }
             }
+
+            // Pages
             if (!string.IsNullOrEmpty(pages))
             {
                 if (!string.IsNullOrEmpty(volIssuePages))
@@ -372,6 +398,8 @@ namespace VUniBox.Services.Citation
                 else
                     volIssuePages = pages;
             }
+
+            // Thêm vào citationParts
             if (!string.IsNullOrEmpty(volIssuePages))
             {
                 citationParts.Add(volIssuePages);
@@ -379,71 +407,130 @@ namespace VUniBox.Services.Citation
             }
 
             // Add DOI if available, otherwise URL
+            // Không thêm DOI/URL vào citationParts nữa
+            // Nếu URL chứa DOI thì bỏ qua URL (tránh trùng)
+            // Nếu URL là đường dẫn DOI thì loại bỏ để tránh trùng
+            if (!string.IsNullOrEmpty(url) && url.Contains("doi.org", StringComparison.OrdinalIgnoreCase))
+            {
+                url = "";
+            }
+
+            // Chỉ chọn 1 trong hai: DOI hoặc URL
+            string retrievalInfo = "";
             if (!string.IsNullOrEmpty(doi))
             {
-                citationParts.Add($"https://doi.org/{doi}");
+                retrievalInfo = $"https://doi.org/{doi}";
             }
             else if (!string.IsNullOrEmpty(url))
             {
-                citationParts.Add($"Retrieved {accessDate}, from {url}");
+                retrievalInfo = $"Retrieved {accessDate}, from {url}";
             }
             else
             {
-                citationParts.Add($"Retrieved {accessDate}");
+                retrievalInfo = $"Retrieved {accessDate}";
             }
-            
-            formatted = string.Join(". ", citationParts);
-            
-            // In-text citation: (Author, Year) or (Author et al., Year)
+
+            // --- Ghép các phần nội dung chính của trích dẫn (với dấu , sau tên tạp chí) ---
+            var parts = citationParts.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
+            if (parts.Count > 1)
+            {
+                var formattedParts = new List<string>();
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    var part = parts[i].Trim().TrimEnd(',', '.', ';');
+
+                    // Nếu phần này là tên tạp chí (đứng trước volume)
+                    bool isJournalBeforeVolume =
+                        (i == parts.Count - 2 && !string.IsNullOrEmpty(volume));
+
+                    if (isJournalBeforeVolume)
+                        formattedParts.Add($"{part},"); // Dấu phẩy sau journal name
+                    else
+                        formattedParts.Add(part);
+                }
+
+                formatted = string.Join(". ", formattedParts);
+
+                // Xử lý lỗi “,.” -> thay bằng “,”
+                formatted = formatted.Replace(",.", ",").Trim();
+                formatted += ".";
+            }
+            else
+            {
+                formatted = parts.FirstOrDefault()?.Trim().TrimEnd(',', '.', ';') + ".";
+            }
+
+            // --- Chỉ thêm phần DOI/URL nếu chưa tồn tại để tránh trùng ---
+            if (!string.IsNullOrWhiteSpace(retrievalInfo))
+            {
+                if (!formatted.Contains("doi.org", StringComparison.OrdinalIgnoreCase))
+                {
+                    formatted = formatted.TrimEnd('.');
+                    formatted += $". {retrievalInfo}";
+                }
+            }
+
+            // --- Dọn dẹp format (tránh dấu chấm/phẩy thừa) ---
+            formatted = formatted
+                .Replace("..", ".")
+                .Replace(".,", ",")
+                .Trim()
+                .TrimEnd(',', '.')
+                + ".";
+
+            // --- Tạo in-text citation chuẩn APA ---
             var inText = $"({GetLastNameAPA(authors)}, {yearStr})";
-            
+
             return (formatted, inText);
+
+
         }
 
         private string FormatAuthorsAPA(string authors)
         {
             if (string.IsNullOrWhiteSpace(authors))
+                return "Academic Authors";
+
+            authors = authors.Trim();
+
+            // Nếu chỉ có một tác giả (dựa trên số dấu phẩy chính giữa họ và tên)
+            if (!authors.Contains(";") && !authors.Contains(" and ") && authors.Count(c => c == ',') == 1)
             {
-                return "Academic Authors"; // Never return "Unknown Author"
+                return authors; // giữ nguyên input "Sahid, N. Z."
             }
 
-            // Handle multiple authors separated by commas, semicolons, or "and"
-            var authorList = authors.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
-                                   .Select(a => a.Trim())
-                                   .ToList();
+            // Tách các tác giả theo dấu chấm phẩy hoặc "and"
+            var authorList = authors.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(a => a.Trim())
+                                    .ToList();
 
-            // Handle "and" in a single string
+            // Nếu còn 1 chuỗi duy nhất, tách theo " and "
             if (authorList.Count == 1 && authorList[0].Contains(" and "))
             {
-                authorList = authorList[0].Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
-                                         .Select(a => a.Trim())
-                                         .ToList();
+                authorList = authorList[0].Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                                           .Select(a => a.Trim())
+                                           .ToList();
             }
 
-            // Format each author to APA style (Last, F. M.)
-            var formattedAuthors = authorList.Select(FormatSingleAuthorAPA).ToList();
-
-            if (formattedAuthors.Count == 1)
+            // Gộp theo chuẩn APA
+            if (authorList.Count == 1)
+                return authorList[0];
+            else if (authorList.Count == 2)
+                return $"{authorList[0]}, & {authorList[1]}";
+            else if (authorList.Count <= 7)
             {
-                return formattedAuthors[0];
-            }
-            else if (formattedAuthors.Count == 2)
-            {
-                return $"{formattedAuthors[0]}, & {formattedAuthors[1]}";
-            }
-            else if (formattedAuthors.Count <= 7)
-            {
-                // For 3-7 authors, list all with & before the last
-                var allButLast = string.Join(", ", formattedAuthors.Take(formattedAuthors.Count - 1));
-                return $"{allButLast}, & {formattedAuthors.Last()}";
+                var allButLast = string.Join(", ", authorList.Take(authorList.Count - 1));
+                return $"{allButLast}, & {authorList.Last()}";
             }
             else
             {
-                // For more than 7 authors, use first 6, then ..., then last author
-                var firstSix = string.Join(", ", formattedAuthors.Take(6));
-                return $"{firstSix}, ..., {formattedAuthors.Last()}";
+                var firstSix = string.Join(", ", authorList.Take(6));
+                return $"{firstSix}, ..., {authorList.Last()}";
             }
         }
+
+
+
 
         /// <summary>
         /// Format a single author name to APA style (Last, F. M.)
@@ -454,7 +541,7 @@ namespace VUniBox.Services.Citation
                 return "Academic Author";
 
             authorName = authorName.Trim();
-            
+
             // If already in Last, F. M. format, return as is
             if (System.Text.RegularExpressions.Regex.IsMatch(authorName, @"^[A-Z][a-z]+,\s[A-Z]\.\s?([A-Z]\.)?"))
             {
@@ -462,7 +549,7 @@ namespace VUniBox.Services.Citation
             }
 
             var nameParts = authorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            
+
             if (nameParts.Length == 1)
             {
                 // Only one name part, treat as last name
@@ -527,6 +614,77 @@ namespace VUniBox.Services.Citation
             }
         }
 
+        private string GetLastNameMLA(string authors)
+        {
+            if (string.IsNullOrWhiteSpace(authors))
+                return "Academic Authors";
+
+            // Ưu tiên tách theo dấu chấm phẩy (;) hoặc từ "and"
+            var authorList = authors
+                .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(a => a.Trim())
+                .ToList();
+
+            if (authorList.Count == 1 && authorList[0].Contains(" and "))
+            {
+                authorList = authorList[0]
+                    .Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(a => a.Trim())
+                    .ToList();
+            }
+
+            // Giờ authorList chính xác, không bị tách sai bởi dấu phẩy trong "Iqbal, Abid"
+
+            if (authorList.Count == 1)
+            {
+                return ExtractLastNameMLA(authorList[0]);
+            }
+            else if (authorList.Count == 2)
+            {
+                return $"{ExtractLastNameMLA(authorList[0])} and {ExtractLastNameMLA(authorList[1])}";
+            }
+            else
+            {
+                return $"{ExtractLastNameMLA(authorList[0])} et al.";
+            }
+        }
+
+        private string ExtractLastNameMLA(string author)
+        {
+            if (string.IsNullOrWhiteSpace(author))
+                return "";
+
+            author = author.Trim();
+
+            // Nếu tên có dạng "Họ, Tên" ⇒ lấy phần trước dấu phẩy
+            if (author.Contains(","))
+                return author.Split(',')[0].Trim();
+
+            // Nếu tên có dạng "Tên Họ" ⇒ lấy phần cuối
+            var parts = author.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Last().Trim();
+        }
+
+
+        private string GetLastNameChicago(string authors)
+        {
+            if (string.IsNullOrWhiteSpace(authors))
+                return "Academic Authors";
+
+            // Giống logic MLA để lấy tác giả đầu tiên
+            var authorList = authors
+                .Split(new[] { " and ", ";", " & " }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(a => a.Trim())
+                .ToList();
+
+            var firstAuthor = authorList.FirstOrDefault() ?? "";
+            if (firstAuthor.Contains(","))
+                return firstAuthor.Split(',')[0].Trim();
+
+            var parts = firstAuthor.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return parts.LastOrDefault() ?? firstAuthor;
+        }
+
         /// <summary>
         /// Extract last name from a full name
         /// </summary>
@@ -549,97 +707,157 @@ namespace VUniBox.Services.Citation
             {
                 return nameParts.Last(); // Return last name
             }
-            
+
             return fullName; // Return as is if only one part
         }
 
-        private (string formatted, string inText) GenerateMLACitation(string authors, string title, string url, string accessDate, int? year,
-            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
+        private (string formatted, string inText) GenerateMLACitation(string authors, string title, string url,string accessDate,int? year,string doi = "",string volume = "",string issue = "",string pages = "", string publisher = "" )
         {
             var authorPart = FormatAuthorsMLANew(authors);
             var yearStr = year?.ToString() ?? DateTime.Now.Year.ToString();
-            
-            // Format: Author. "Title." Publisher, vol. Volume, no. Issue, Year, pp. Pages. DOI/URL.
-            var citationParts = new List<string>();
-            
-            // Author and title (clean AI artifacts)
+
+            // Làm sạch tiêu đề
             var cleanTitle = CleanAIGeneratedTitle(title);
-            citationParts.Add(@$"{authorPart}. ""{cleanTitle}.""");
 
+            // === Cấu trúc MLA ===
+            // Author. "Title." Journal Name, vol. Volume, no. Issue, Year, pp. Pages. DOI/URL.
+            var citationParts = new List<string>();
 
+            // 1️⃣ Tác giả + tiêu đề
+            citationParts.Add($"{authorPart}. \"{cleanTitle}.\"");
 
-            // Add publisher if available
+            // 2️⃣ Tên nhà xuất bản hoặc tạp chí
             if (!string.IsNullOrEmpty(publisher))
             {
-                citationParts.Add(publisher);
+                citationParts.Add($"{publisher},");
             }
 
-            // Volume/issue/pages information
-            var volIssuePages = "";
+            // 3️⃣ Thông tin volume / issue / year / pages
+            var volIssueYearPages = "";
+
             if (!string.IsNullOrEmpty(volume))
             {
-                volIssuePages += $"vol. {volume}";
+                volIssueYearPages += $"vol. {volume}";
                 if (!string.IsNullOrEmpty(issue))
                 {
-                    volIssuePages += $", no. {issue}";
+                    volIssueYearPages += $", no. {issue}";
                 }
             }
-            if (!string.IsNullOrEmpty(pages))
+
+            if (!string.IsNullOrEmpty(yearStr))
             {
-                if (!string.IsNullOrEmpty(volIssuePages))
-                    volIssuePages += $", pp. {pages}";
+                if (!string.IsNullOrEmpty(volIssueYearPages))
+                    volIssueYearPages += $", {yearStr}";
                 else
-                    volIssuePages = $"pp. {pages}";
-            }
-            if (!string.IsNullOrEmpty(volIssuePages))
-            {
-                citationParts.Add(volIssuePages);
-                Console.WriteLine($"Vol/Issue/Pages Part: {volIssuePages}");
+                    volIssueYearPages = yearStr;
             }
 
-            // DOI or URL
+            if (!string.IsNullOrEmpty(pages))
+            {
+                if (!string.IsNullOrEmpty(volIssueYearPages))
+                    volIssueYearPages += $", pp. {pages}";
+                else
+                    volIssueYearPages = $"pp. {pages}";
+            }
+
+            if (!string.IsNullOrEmpty(volIssueYearPages))
+            {
+                citationParts.Add(volIssueYearPages + ".");
+            }
+
+            // 4️⃣ DOI hoặc URL
             if (!string.IsNullOrEmpty(doi))
             {
-                citationParts.Add($"https://doi.org/{doi}");
+                citationParts.Add($"https://doi.org/{doi}.");
             }
             else if (!string.IsNullOrEmpty(url))
             {
-                citationParts.Add(url);
+                citationParts.Add($"{url}.");
             }
-            
-            var formatted = string.Join(". ", citationParts);
+
+            // 5️⃣ Nối lại toàn bộ và dọn sạch dấu câu
+            var formatted = string.Join(" ", citationParts)
+                .Replace("..", ".")
+                .Replace(".,", ",")
+                .Replace(",.", ",")
+                .Replace(" ,", ",")
+                .Replace(" .", ".")
+                .Trim();
+
+            // Đảm bảo kết thúc bằng dấu chấm
             if (!formatted.EndsWith("."))
-            {
                 formatted += ".";
+
+            // In-text citation
+            var inText = "";
+
+            // Nếu có dấu chấm phẩy hoặc từ "and" thì chắc chắn là nhiều tác giả
+            List<string> authorList;
+
+            if (authors.Contains(";") || authors.Contains(" and "))
+            {
+                authorList = authors.Split(new string[] { ";", " and " }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(a => a.Trim())
+                                    .ToList();
             }
-            
-            // In-text citation: (Author Page) - for now just (Author) since we don't have page numbers in context
-            var inText = $"({GetLastNameMLA(authors)})";
+            else
+            {
+                // Nếu có nhiều dấu phẩy, ta cần kiểm tra xem đó là tên của 1 người hay nhiều người
+                var commaParts = authors.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                        .Select(a => a.Trim())
+                                        .ToList();
+
+                if (commaParts.Count > 2)
+                {
+                    // Trường hợp có nhiều họ tên
+                    authorList = new List<string>();
+                    for (int i = 0; i < commaParts.Count; i += 2)
+                    {
+                        if (i + 1 < commaParts.Count)
+                            authorList.Add($"{commaParts[i]}, {commaParts[i + 1]}");
+                        else
+                            authorList.Add(commaParts[i]);
+                    }
+                }
+                else
+                {
+                    // Chỉ 1 tác giả
+                    authorList = new List<string> { authors.Trim() };
+                }
+            }
+
+            // Xử lý in-text citation chuẩn MLA
+            if (authorList.Count == 1)
+                inText = $"({GetLastNameMLA(authorList[0])})";
+            else if (authorList.Count == 2)
+                inText = $"({GetLastNameMLA(authorList[0])} and {GetLastNameMLA(authorList[1])})";
+            else if (authorList.Count >= 3)
+                inText = $"({GetLastNameMLA(authorList[0])} et al.)";
+
             return (formatted, inText);
         }
 
+
         private (string formatted, string inText) GenerateChicagoCitation(string authors, string title, string url, string accessDate, int? year,
-            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
+        string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
             var authorPart = FormatAuthorsChicagoNew(authors);
             var yearPart = year?.ToString() ?? DateTime.Now.Year.ToString();
-            
-            // Format: Author. "Title." Publisher Volume, no. Issue (Year): Pages. DOI/URL.
+            var cleanTitle = CleanAIGeneratedTitle(title)?.Trim().TrimEnd('.') ?? "";
+
             var citationParts = new List<string>();
-            
-            // Author and title (clean AI artifacts)
-            var cleanTitle = CleanAIGeneratedTitle(title);
-            citationParts.Add(@$"{authorPart}. ""{cleanTitle}.""");
 
+            // Author + Title
+            citationParts.Add($"{authorPart}. \"{cleanTitle}.\"");
 
-
-            // Add publisher if available
+            // Publisher (Journal name)
             if (!string.IsNullOrEmpty(publisher))
             {
-                citationParts.Add(publisher);
+                // Remove trailing dots/commas so join(". ") won't create "Management ."
+                citationParts.Add(publisher.Trim().TrimEnd('.', ','));
             }
 
-            // Volume/issue/pages information
+            // Volume, issue, year, pages
             var volIssuePages = "";
             if (!string.IsNullOrEmpty(volume))
             {
@@ -660,25 +878,53 @@ namespace VUniBox.Services.Citation
             if (!string.IsNullOrEmpty(volIssuePages))
             {
                 citationParts.Add(volIssuePages);
-                Console.WriteLine($"Vol/Issue/Pages Part: {volIssuePages}");
             }
 
             // DOI or URL
             if (!string.IsNullOrEmpty(doi))
             {
+                // Remove duplicate "https://doi.org/"
+                doi = doi.Trim().Replace("https://doi.org/", "").Replace("http://doi.org/", "").TrimEnd('.');
                 citationParts.Add($"https://doi.org/{doi}");
             }
             else if (!string.IsNullOrEmpty(url))
             {
                 citationParts.Add($"Accessed {accessDate}. {url}");
             }
-            
-            var formatted = string.Join(". ", citationParts);
-            if (!formatted.EndsWith("."))
+
+            var formatted = "";
+
+            for (int i = 0; i < citationParts.Count; i++)
             {
-                formatted += ".";
+                var part = citationParts[i].Trim().TrimEnd('.', ',');
+                formatted += part;
+
+                if (i < citationParts.Count - 1)
+                {
+                    var next = citationParts[i + 1].Trim();
+
+                    // Nếu phần hiện tại kết thúc bằng dấu ngoặc kép (".") => KHÔNG thêm dấu chấm nữa
+                    if (part.EndsWith("\""))
+                    {
+                        formatted += " ";
+                    }
+                    // Nếu là publisher + volume liền kề thì cũng chỉ thêm khoảng trắng
+                    else if (i == 1 && char.IsDigit(next.FirstOrDefault()))
+                    {
+                        formatted += " ";
+                    }
+                    else
+                    {
+                        formatted += ". ";
+                    }
+                }
             }
-            
+
+            // Đảm bảo kết thúc bằng dấu chấm
+            if (!formatted.EndsWith("."))
+                formatted += ".";
+
+
             var inText = $"({GetLastNameChicago(authors)}, {yearPart})";
             return (formatted, inText);
         }
@@ -688,33 +934,36 @@ namespace VUniBox.Services.Citation
         {
             var yearStr = year?.ToString() ?? DateTime.Now.Year.ToString();
             var authorPart = FormatAuthorsHarvardNew(authors);
-            
+
             // Build citation with publisher and metadata (clean AI artifacts)
             var cleanTitle = CleanAIGeneratedTitle(title);
             var formatted = $"{authorPart} ({yearStr}) '{cleanTitle}'";
-            
+
             // Add publisher if available
             if (!string.IsNullOrEmpty(publisher))
             {
                 formatted += $", {publisher}";
             }
-            
+
             // Add volume and issue if available
             if (!string.IsNullOrEmpty(volume))
             {
-                formatted += $", {volume}";
-                if (!string.IsNullOrEmpty(issue))
-                {
-                    formatted += $"({issue})";
-                }
+                // Nếu issue đã có ngoặc sẵn, bỏ ngoặc ngoài
+                var issueClean = issue?.Trim();
+                if (!string.IsNullOrEmpty(issueClean))
+                    issueClean = issueClean.Trim('(', ')');
+
+                formatted += string.IsNullOrEmpty(issueClean)
+                    ? $", {volume}"
+                    : $", {volume}({issueClean})";
             }
-            
+
             // Add pages if available
             if (!string.IsNullOrEmpty(pages))
             {
                 formatted += $", pp. {pages}";
             }
-            
+
             // Add DOI or URL
             if (!string.IsNullOrEmpty(doi))
             {
@@ -728,7 +977,7 @@ namespace VUniBox.Services.Citation
             {
                 formatted += ".";
             }
-            
+
             var inText = $"({GetLastNameHarvard(authors)}, {yearStr})";
             return (formatted, inText);
         }
@@ -737,53 +986,54 @@ namespace VUniBox.Services.Citation
             string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
             var authorPart = FormatAuthorsIEEENew(authors);
-            
-            // Build citation with publisher and metadata (clean AI artifacts)
+
+            // Làm sạch tiêu đề
             var cleanTitle = CleanAIGeneratedTitle(title);
-            var formatted = $"[1] {authorPart}, \"{cleanTitle}\"";
-            
-            // Add publisher if available
+
+            // ⚙️ Đặt dấu phẩy ngay bên trong ngoặc kép của tiêu đề
+            var formatted = $"[1] {authorPart}, \"{cleanTitle},\"";
+
+            // Thêm publisher (tên tạp chí)
             if (!string.IsNullOrEmpty(publisher))
             {
-                formatted += $", {publisher}";
+                formatted += $" {publisher}";
             }
-            
-            // Add volume if available
+
+            // Thêm volume, issue, pages
             if (!string.IsNullOrEmpty(volume))
             {
                 formatted += $", vol. {volume}";
             }
-            
-            // Add issue if available
+
             if (!string.IsNullOrEmpty(issue))
             {
                 formatted += $", no. {issue}";
             }
-            
-            // Add pages if available
+
             if (!string.IsNullOrEmpty(pages))
             {
                 formatted += $", pp. {pages}";
             }
-            
-            // Add year (extracted from accessDate or current year)
+
+            // Thêm năm (hoặc lấy từ accessDate nếu có)
             var year = DateTime.Now.Year;
             formatted += $", {year}";
-            
-            // Add DOI or URL
+
+            // Thêm DOI hoặc URL
             if (!string.IsNullOrEmpty(doi))
             {
-                formatted += $". doi: {doi}";
+               
+                formatted += $". doi: {doi}.";
             }
             else if (!string.IsNullOrEmpty(url))
             {
-                formatted += $". Available: {url}";
+                formatted += $". Available: {url}.";
             }
             else
             {
                 formatted += ".";
             }
-            
+
             var inText = "[1]";
             return (formatted, inText);
         }
@@ -792,21 +1042,21 @@ namespace VUniBox.Services.Citation
             string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
             var authorPart = FormatAuthorsVancouverNew(authors);
-            
+
             // Build citation with publisher and metadata (clean AI artifacts)
             var cleanTitle = CleanAIGeneratedTitle(title);
             var formatted = $"(1) {authorPart}. {cleanTitle}";
-            
+
             // Add publisher if available
             if (!string.IsNullOrEmpty(publisher))
             {
                 formatted += $". {publisher}";
             }
-            
+
             // Add year
             var year = DateTime.Now.Year;
             formatted += $". {year}";
-            
+
             // Add volume and issue if available
             if (!string.IsNullOrEmpty(volume))
             {
@@ -816,15 +1066,15 @@ namespace VUniBox.Services.Citation
                     formatted += $"({issue})";
                 }
             }
-            
+
             // Add pages if available
             if (!string.IsNullOrEmpty(pages))
             {
                 formatted += $":{pages}";
             }
-            
+
             formatted += ".";
-            
+
             var inText = "[1]";
             return (formatted, inText);
         }
@@ -832,49 +1082,66 @@ namespace VUniBox.Services.Citation
         // Format methods for different citation styles
         private string FormatAuthorsMLA(string authors) => FormatAuthorsGeneric(authors);
         private string FormatAuthorsChicago(string authors) => FormatAuthorsGeneric(authors);
-        
+
         private string FormatAuthorsChicagoNew(string authors)
         {
-            if (string.IsNullOrEmpty(authors))
-                return "";
+            if (string.IsNullOrWhiteSpace(authors)) return "";
 
-            // Clean the authors string
-            authors = authors.Trim();
+            // Normalize connectors but don't create extra commas
+            authors = authors.Replace(" & ", " and ").Trim();
 
-            // Split by common delimiters and clean up
-            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
-                                   .Select(a => a.Trim())
-                                   .Where(a => !string.IsNullOrEmpty(a))
-                                   .ToList();
-
-            if (authorList.Count == 0)
-                return "";
-
-            // Format authors for Chicago style: FirstName LastName
-            var formattedAuthors = new List<string>();
-            
-            for (int i = 0; i < authorList.Count && i < 3; i++)
+            // Split by " and " or semicolon first (prefer explicit separators)
+            List<string> authorList;
+            if (authors.Contains(" and "))
             {
-                var author = FormatSingleAuthorChicago(authorList[i]);
-                formattedAuthors.Add(author);
+                authorList = authors.Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(a => a.Trim().TrimEnd(',', '.', ';'))
+                                    .Where(a => !string.IsNullOrEmpty(a))
+                                    .ToList();
+            }
+            else
+            {
+                authorList = authors.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(a => a.Trim().TrimEnd(',', '.', ';'))
+                                    .Where(a => !string.IsNullOrEmpty(a))
+                                    .ToList();
+                // If still only one piece but contains commas separating multiple authors, try comma-pair grouping
+                if (authorList.Count == 1)
+                {
+                    var commaParts = authors.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                            .Select(p => p.Trim())
+                                            .ToList();
+                    if (commaParts.Count >= 2)
+                    {
+                        // recombine into "Lastname, Firstname" pairs
+                        var recomb = new List<string>();
+                        for (int i = 0; i < commaParts.Count; i += 2)
+                        {
+                            if (i + 1 < commaParts.Count)
+                                recomb.Add($"{commaParts[i]}, {commaParts[i + 1]}");
+                            else
+                                recomb.Add(commaParts[i]);
+                        }
+                        authorList = recomb;
+                    }
+                }
             }
 
-            // Handle multiple authors
-            if (authorList.Count > 3)
-            {
-                return $"{formattedAuthors[0]}, {formattedAuthors[1]}, {formattedAuthors[2]}, và {formattedAuthors[2]}";
-            }
-            else if (authorList.Count == 3)
-            {
-                return $"{formattedAuthors[0]}, {formattedAuthors[1]}, và {formattedAuthors[2]}";
-            }
-            else if (authorList.Count == 2)
-            {
-                return $"{formattedAuthors[0]}, và {formattedAuthors[1]}";
-            }
+            // Format each author naturally (Firstname Lastname)
+            var formattedAuthors = authorList.Select(a => FormatSingleAuthorChicago(a)).ToList();
 
-            return formattedAuthors[0];
+            // Join carefully to avoid duplicate commas
+            if (formattedAuthors.Count == 1)
+                return formattedAuthors[0];
+            if (formattedAuthors.Count == 2)
+                return $"{formattedAuthors[0]}, and {formattedAuthors[1]}"; // 👈 thêm dấu phẩy trước "and"
+            if (formattedAuthors.Count == 3)
+                return string.Join(", ", formattedAuthors.Take(2)) + $", and {formattedAuthors[2]}"; // 👈 vẫn giữ dấu phẩy Oxford
+
+            // >3 authors
+            return string.Join(", ", formattedAuthors.Take(formattedAuthors.Count - 1)) + $", and {formattedAuthors.Last()}";
         }
+
 
         private string FormatSingleAuthorChicago(string author)
         {
@@ -897,54 +1164,46 @@ namespace VUniBox.Services.Citation
             return $"{string.Join(" ", givenNames)} {surname}";
         }
         private string FormatAuthorsHarvard(string authors) => FormatAuthorsGeneric(authors);
-        
+
         private string FormatAuthorsHarvardNew(string authors)
         {
             if (string.IsNullOrEmpty(authors))
                 return "";
 
-            // Clean the authors string
-            authors = authors.Trim();
+            // Dọn chuỗi
+            authors = authors.Trim().TrimEnd('.');
 
-            // Split by common delimiters and clean up
-            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
-                                   .Select(a => a.Trim())
-                                   .Where(a => !string.IsNullOrEmpty(a))
-                                   .ToList();
+            // 🔹 Tách tác giả bằng dấu phẩy giữa họ và tên viết tắt,
+            // nhưng không tách trong trường hợp "A., Masrek" (phần tên tắt)
+            authors = Regex.Replace(authors, @"(?<=\w\.),\s*(?=[A-Z])", "; ");
+
+            // Tách các tác giả theo dấu ;, " and ", hoặc " & "
+            var authorList = authors
+                .Split(new[] { ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(a => a.Trim())
+                .Where(a => !string.IsNullOrEmpty(a))
+                .ToList();
 
             if (authorList.Count == 0)
                 return "";
 
-            // Format first author: Lastname, FirstInitial.MiddleInitial.
-            var formattedAuthors = new List<string>();
-            var firstAuthor = FormatSingleAuthorHarvard(authorList[0], true);
-            formattedAuthors.Add(firstAuthor);
-
-            // Add subsequent authors
-            if (authorList.Count > 1)
+            // 🔹 Xử lý từng trường hợp theo số lượng tác giả
+            if (authorList.Count == 1)
             {
-                for (int i = 1; i < authorList.Count && i < 3; i++)
-                {
-                    var author = FormatSingleAuthorHarvard(authorList[i], false);
-                    formattedAuthors.Add(author);
-                }
-
-                // Handle multiple authors
-                if (authorList.Count > 3)
-                {
-                    return $"{formattedAuthors[0]}, {formattedAuthors[1]}, {formattedAuthors[2]} et al.";
-                }
-                else if (authorList.Count == 3)
-                {
-                    return $"{formattedAuthors[0]}, {formattedAuthors[1]} and {formattedAuthors[2]}";
-                }
-                else if (authorList.Count == 2)
-                {
-                    return $"{formattedAuthors[0]} and {formattedAuthors[1]}";
-                }
+                return authorList[0];
             }
-
-            return formattedAuthors[0];
+            else if (authorList.Count == 2)
+            {
+                return $"{authorList[0]} and {authorList[1]}";
+            }
+            else if (authorList.Count == 3)
+            {
+                return $"{authorList[0]}, {authorList[1]} and {authorList[2]}";
+            }
+            else // > 3
+            {
+                return $"{authorList[0]}, {authorList[1]}, {authorList[2]} et al.";
+            }
         }
 
         private string FormatSingleAuthorHarvard(string author, bool isFirst)
@@ -965,7 +1224,7 @@ namespace VUniBox.Services.Citation
             var givenNames = parts.Take(parts.Length - 1).ToList();
 
             // Create initials from given names
-            var initials = string.Join("", givenNames.Select(name => 
+            var initials = string.Join("", givenNames.Select(name =>
             {
                 var initial = name.Substring(0, 1).ToUpper();
                 return initial + ".";
@@ -976,7 +1235,7 @@ namespace VUniBox.Services.Citation
         }
         private string FormatAuthorsIEEE(string authors) => FormatAuthorsGeneric(authors);
         private string FormatAuthorsVancouver(string authors) => FormatAuthorsGeneric(authors);
-        
+
         private string FormatAuthorsIEEENew(string authors)
         {
             if (string.IsNullOrEmpty(authors))
@@ -996,7 +1255,7 @@ namespace VUniBox.Services.Citation
 
             // Format authors for IEEE style: F. M. Lastname
             var formattedAuthors = new List<string>();
-            
+
             for (int i = 0; i < authorList.Count; i++)
             {
                 var author = FormatSingleAuthorIEEE(authorList[i]);
@@ -1036,7 +1295,7 @@ namespace VUniBox.Services.Citation
             var givenNames = parts.Take(parts.Length - 1).ToList();
 
             // Create initials from given names
-            var initials = string.Join(" ", givenNames.Select(name => 
+            var initials = string.Join(" ", givenNames.Select(name =>
             {
                 var initial = name.Substring(0, 1).ToUpper();
                 return initial + ".";
@@ -1045,34 +1304,74 @@ namespace VUniBox.Services.Citation
             // IEEE format: F. M. Surname
             return $"{initials} {surname}";
         }
-        
+
         private string FormatAuthorsVancouverNew(string authors)
         {
-            if (string.IsNullOrEmpty(authors))
+            if (string.IsNullOrWhiteSpace(authors))
                 return "";
 
-            // Clean the authors string
+            // 1. Normalise connectors to comma
             authors = authors.Trim();
+            authors = authors.Replace(" and ", ",").Replace(" & ", ",").Replace(";", ",");
 
-            // Split by common delimiters and clean up
-            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
-                                   .Select(a => a.Trim())
-                                   .Where(a => !string.IsNullOrEmpty(a))
-                                   .ToList();
-
-            if (authorList.Count == 0)
-                return "";
-
-            // Format authors for Vancouver style: Surname FM
-            var formattedAuthors = new List<string>();
-            
-            for (int i = 0; i < authorList.Count; i++)
+            // 2. If there are no commas separating authors (possible missing comma case),
+            //    try to insert commas between author blocks where an initials block is followed by a capitalized surname
+            if (!authors.Contains(","))
             {
-                var author = FormatSingleAuthorVancouver(authorList[i]);
-                formattedAuthors.Add(author);
+                // Insert comma where a short initials/token (like "A" or "A." or "MN" or "M.N.") 
+                // is followed by a space and then a capitalized word (likely next surname).
+                authors = System.Text.RegularExpressions.Regex.Replace(
+                    authors,
+                    @"(?<=\b[A-Za-z]\.?(?:[A-Za-z]\.?)?|\b[A-Z]{1,3}\b)\s+(?=[A-Z][a-zA-Z'\-])",
+                    ", ");
             }
 
-            // Join authors with commas - Vancouver style
+            // 3. Split by comma and trim tokens
+            var parts = authors.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                               .Select(p => p.Trim())
+                               .ToList();
+
+            // If split produced odd number of parts in surname-initials pairing style (e.g. ["Iqbal","A.","Masrek","M.N."] -> ok)
+            // we will pair every two tokens; otherwise if tokens are already full names like "Iqbal A" use them directly.
+            var formattedAuthors = new List<string>();
+
+            bool looksLikePairs = parts.All(p => p.Contains(" ") == false && p.Length <= 4 || p.EndsWith("."));
+            // A simple heuristic: if many tokens look like short initials or single word, we pair them.
+
+            // Better approach: detect whether parts look like alternating surname / initials (e.g. ["Iqbal","A.","Masrek","M.N."])
+            bool likelyPairs = parts.Count >= 2 && parts.Count % 2 == 0 && parts.Take(Math.Min(4, parts.Count)).Any(p => p.EndsWith(".") || p.Length <= 3);
+
+            if (likelyPairs)
+            {
+                for (int i = 0; i < parts.Count; i += 2)
+                {
+                    var surname = parts[i];
+                    var initials = (i + 1 < parts.Count) ? parts[i + 1] : "";
+                    initials = initials.Replace(".", "").Trim();
+                    formattedAuthors.Add($"{surname} {initials}".Trim());
+                }
+            }
+            else
+            {
+                // Assume each part is a full author like "Iqbal A" or "Masrek MN"
+                foreach (var p in parts)
+                {
+                    // if part includes a comma inside (unlikely now) split further, else try to separate surname and initials
+                    var tokens = p.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (tokens.Length >= 2)
+                    {
+                        var surname = tokens[0];
+                        var initials = string.Join("", tokens.Skip(1)).Replace(".", "");
+                        formattedAuthors.Add($"{surname} {initials}".Trim());
+                    }
+                    else
+                    {
+                        // fallback
+                        formattedAuthors.Add(p.Replace(".", "").Trim());
+                    }
+                }
+            }
+
             return string.Join(", ", formattedAuthors);
         }
 
@@ -1094,7 +1393,7 @@ namespace VUniBox.Services.Citation
             var givenNames = parts.Take(parts.Length - 1).ToList();
 
             // Create initials without periods for Vancouver style
-            var initials = string.Join("", givenNames.Select(name => 
+            var initials = string.Join("", givenNames.Select(name =>
             {
                 var initial = name.Substring(0, 1).ToUpper();
                 return initial;
@@ -1110,39 +1409,49 @@ namespace VUniBox.Services.Citation
         private string FormatAuthorsMLANew(string authors)
         {
             if (string.IsNullOrWhiteSpace(authors))
-            {
                 return "Academic Authors";
+
+            // Chuẩn hóa và tách danh sách tác giả
+            var authorList = authors.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(a => a.Trim())
+                                    .ToList();
+
+            // Nếu người dùng dùng dấu "," nhưng chỉ có 1 tác giả ("Iqbal, Abid")
+            // => giữ nguyên, không tách
+            if (authorList.Count == 1 && !authors.Contains(";") && authors.Count(c => c == ',') == 1)
+            {
+                return authors.Trim();
             }
 
-            // Handle multiple authors separated by commas, semicolons, or "and"
-            var authorList = authors.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
-                                   .Select(a => a.Trim())
-                                   .ToList();
-
-            // Handle "and" in a single string
+            // Nếu danh sách chỉ có 1 phần tử chứa " and " thì tách tiếp
             if (authorList.Count == 1 && authorList[0].Contains(" and "))
             {
-                authorList = authorList[0].Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
-                                         .Select(a => a.Trim())
-                                         .ToList();
+                authorList = authorList[0]
+                    .Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(a => a.Trim())
+                    .ToList();
             }
 
+            // Xử lý theo số lượng tác giả
             if (authorList.Count == 1)
             {
-                return FormatSingleAuthorMLA(authorList[0]);
+                // Một tác giả duy nhất
+                return authorList[0];
             }
             else if (authorList.Count == 2)
             {
-                return $"{FormatSingleAuthorMLA(authorList[0])}, and {FormatSingleAuthorMLA(authorList[1], false)}";
+                // Hai tác giả: "Họ1, Tên1, and Tên2 Họ2"
+                var firstAuthor = authorList[0];
+                var secondAuthor = authorList[1];
+                return $"{firstAuthor}, and {secondAuthor}";
             }
-            else if (authorList.Count >= 3)
+            else
             {
-                // For 3+ authors: First author, et al.
-                return $"{FormatSingleAuthorMLA(authorList[0])}, et al.";
+                // Ba tác giả trở lên: "Họ1, Tên1, et al."
+                return $"{authorList[0]}, et al.";
             }
-
-            return authors;
         }
+
 
         /// <summary>
         /// Format a single author for MLA: Last, First
@@ -1153,7 +1462,7 @@ namespace VUniBox.Services.Citation
                 return "Academic Author";
 
             authorName = authorName.Trim();
-            
+
             // If already in Last, First format, return as is
             if (authorName.Contains(",") && isFirstAuthor)
             {
@@ -1161,7 +1470,7 @@ namespace VUniBox.Services.Citation
             }
 
             var nameParts = authorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            
+
             if (nameParts.Length == 1)
             {
                 return nameParts[0];
@@ -1208,8 +1517,8 @@ namespace VUniBox.Services.Citation
         }
 
         // Last name extraction methods for different styles
-        private string GetLastNameMLA(string authors) => GetLastNameAPA(authors);
-        private string GetLastNameChicago(string authors) => GetLastNameAPA(authors);
+        
+       
         private string GetLastNameHarvard(string authors) => GetLastNameAPA(authors);
 
         // AI methods (currently disabled but kept for future use)
@@ -1327,7 +1636,7 @@ namespace VUniBox.Services.Citation
                 return "Academic Researcher";
             if (prompt.Contains("wikipedia", StringComparison.OrdinalIgnoreCase))
                 return "Wikipedia Contributors";
-            
+
             return "Research Author";
         }
 
@@ -1375,7 +1684,7 @@ namespace VUniBox.Services.Citation
                 {
                     var metadataText = geminiResponse.Candidates.First().Content.Parts.First().Text.Trim();
                     Console.WriteLine($"[GeminiCitationService] AI extracted metadata: {metadataText}");
-                    
+
                     // Parse metadata from AI response (text format expected)
                     return ParseMetadataFromText(metadataText);
                 }
@@ -1492,7 +1801,7 @@ namespace VUniBox.Services.Citation
             {
                 author = authorMatch.Groups[1].Value.Trim();
                 // Don't use "Unknown" as author if we can extract something meaningful
-                if (!author.Equals("Unknown", StringComparison.OrdinalIgnoreCase) && 
+                if (!author.Equals("Unknown", StringComparison.OrdinalIgnoreCase) &&
                     !author.Equals("Unknown Author", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine($"[GeminiCitationService] Extracted author: {author}");
@@ -1526,7 +1835,7 @@ namespace VUniBox.Services.Citation
             if (publisherMatch.Success && !string.IsNullOrWhiteSpace(publisherMatch.Groups[1].Value))
             {
                 publisher = publisherMatch.Groups[1].Value.Trim();
-                if (!publisher.Equals("Unknown", StringComparison.OrdinalIgnoreCase) && 
+                if (!publisher.Equals("Unknown", StringComparison.OrdinalIgnoreCase) &&
                     !publisher.Equals("Unknown Publisher", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine($"[GeminiCitationService] Extracted publisher: {publisher}");

@@ -9,5 +9,8 @@
         public string? Author { get; set; }
         public string? Publisher { get; set; }
         public string? Doi { get; set; }
+        public string? Volumne { get; set; }
+        public string? Issue { get; set; }
+        public string? Pages { get; set; }
     }
 }

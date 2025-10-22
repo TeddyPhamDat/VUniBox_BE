@@ -565,6 +565,16 @@ namespace VUniBox.Services.DocumentManagement
             if (!string.IsNullOrEmpty(request.Doi))
                 document.Doi = request.Doi;
 
+            if(!string.IsNullOrEmpty(request.Volumne))
+                document.Volume = request.Volumne;
+
+            if (!string.IsNullOrEmpty(request.Issue))
+                document.Issue = request.Issue;
+
+            if (!string.IsNullOrEmpty(request.Pages))
+                document.Pages = request.Pages;
+
+
             await _context.SaveChangesAsync();
             return true;
         }

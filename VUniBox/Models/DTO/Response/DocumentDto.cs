@@ -60,7 +60,14 @@ namespace VUniBox.Models.DTO.Response
         public string Authors { get; set; } = string.Empty;
         /// <summary>
         /// Gets or sets the publication date of the document.
-        /// </summary>
+        /// </summary> 
+
+        public int? Year { get; set; }
+        /// <summary>
+        /// Gets or sets the year of the document.
+        /// </summary> 
+
+
         public DateOnly? PublicationDate { get; set; }
         /// <summary>
         /// Gets or sets the publisher of the document.
@@ -154,6 +161,7 @@ namespace VUniBox.Models.DTO.Response
             ExpiryDate = document.TrashDate;
             Author = document.Author ?? string.Empty;
             Authors = document.Authors ?? string.Empty;
+            Year = document.Year;
             PublicationDate = document.PublicationDate;
             Publisher = document.Publisher ?? string.Empty;
             Journal = document.Journal ?? string.Empty;
