@@ -61,7 +61,12 @@ namespace VUniBox.Services.Citation
                     pubDate,
                     docType,
                     url,
-                    citationStyle);
+                    citationStyle,
+                    document.Doi ?? "",
+                    document.Volume ?? "",
+                    document.Issue ?? "",
+                    document.Pages ?? "",
+                    document.Publisher ?? "");
 
                 return (formatted ?? "Citation not available", inText ?? "(Citation not available)");
             }
@@ -104,7 +109,12 @@ namespace VUniBox.Services.Citation
                     document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
                     GetDocumentTypeName(document.DocumentType),
                     document.SourceUrl ?? "",
-                    citationStyle);
+                    citationStyle,
+                    document.Doi ?? "",
+                    document.Volume ?? "",
+                    document.Issue ?? "",
+                    document.Pages ?? "",
+                    finalPublisher);
 
                 Console.WriteLine($"[CitationManagementService] Enhanced citation generated - Author: {finalAuthor}, Year: {finalYear}, Publisher: {finalPublisher}");
                 return (formatted ?? "Citation not available", inText ?? "(Citation not available)");
@@ -220,7 +230,12 @@ Provide professional, citation-ready metadata that follows academic standards.";
                         updateEnhancedData.PublicationDate,
                         updateEnhancedData.Type,
                         updateEnhancedData.Url,
-                        citationStyle);
+                        citationStyle,
+                        document.Doi ?? "",
+                        document.Volume ?? "",
+                        document.Issue ?? "",
+                        document.Pages ?? "",
+                        document.Publisher ?? "");
 
                     Console.WriteLine($"[CitationManagementService] Generated citations - Formatted: {updateFormatted}, InText: {updateInText}");
 
@@ -263,7 +278,12 @@ Provide professional, citation-ready metadata that follows academic standards.";
                     enhancedData.PublicationDate,
                     enhancedData.Type,
                     enhancedData.Url,
-                    citationStyle);
+                    citationStyle,
+                    document.Doi ?? "",
+                    document.Volume ?? "",
+                    document.Issue ?? "",
+                    document.Pages ?? "",
+                    document.Publisher ?? "");
 
                 Console.WriteLine($"[CitationManagementService] Generated citations - Formatted: {formatted}, InText: {inText}");
 
@@ -350,7 +370,12 @@ Provide professional, citation-ready metadata that follows academic standards.";
                     enhancedData.PublicationDate,
                     enhancedData.Type,
                     enhancedData.Url,
-                    newCitationStyle);
+                    newCitationStyle,
+                    document.Doi ?? "",
+                    document.Volume ?? "",
+                    document.Issue ?? "",
+                    document.Pages ?? "",
+                    document.Publisher ?? "");
 
                 // Validate generated citations
                 if (string.IsNullOrWhiteSpace(formatted) || string.IsNullOrWhiteSpace(inText))
@@ -1249,6 +1274,14 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                 {
                     // Use existing data if complete
                     Console.WriteLine($"[CitationManagementService] Document has complete metadata, skipping AI enhancement");
+                    
+                    // Smart URL extraction even when skipping AI enhancement
+                    string existingUrl = CleanUrl(document.SourceUrl ?? "");
+                    if (string.IsNullOrEmpty(existingUrl) || (!existingUrl.StartsWith("http://") && !existingUrl.StartsWith("https://")))
+                    {
+                        existingUrl = ExtractUrlFromContent(document.Abstract) ?? ExtractUrlFromContent(document.SourceUrl) ?? "";
+                    }
+                    
                     return new EnhancedCitationData
                     {
                         Title = document.Title ?? "Unknown Title",
@@ -1256,7 +1289,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                         Year = document.Year,
                         PublicationDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
                         Type = document.DocumentType.ToString(),
-                        Url = document.SourceUrl ?? "",
+                        Url = existingUrl,
                         Publisher = document.Publisher ?? ""
                     };
                 }
@@ -1305,6 +1338,33 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                     Console.WriteLine($"[CitationManagementService] Using year: {finalYear}");
                 }
 
+                // Smart URL extraction and publisher fallback logic
+                string finalUrl = "";
+                
+                // First try to get URL from SourceUrl field
+                var sourceUrl = CleanUrl(document.SourceUrl ?? "");
+                if (!string.IsNullOrEmpty(sourceUrl) && (sourceUrl.StartsWith("http://") || sourceUrl.StartsWith("https://")))
+                {
+                    finalUrl = sourceUrl;
+                }
+                else
+                {
+                    // If SourceUrl doesn't have valid URL, try to extract from Abstract
+                    finalUrl = ExtractUrlFromContent(document.Abstract);
+                    if (string.IsNullOrEmpty(finalUrl))
+                    {
+                        // Last resort: try to extract from SourceUrl content
+                        finalUrl = ExtractUrlFromContent(document.SourceUrl);
+                    }
+                }
+
+                // If we still don't have a valid URL and publisher is missing, infer publisher from document context
+                if (string.IsNullOrEmpty(finalUrl) && string.IsNullOrWhiteSpace(finalPublisher))
+                {
+                    finalPublisher = InferPublisherFromContext(document);
+                    Console.WriteLine($"[CitationManagementService] Inferred publisher from context: {finalPublisher}");
+                }
+
                 return new EnhancedCitationData
                 {
                     Title = finalTitle ?? "Unknown Title",
@@ -1312,7 +1372,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                     Year = finalYear ?? DateTime.UtcNow.Year,
                     PublicationDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
                     Type = document.DocumentType.ToString(),
-                    Url = document.SourceUrl ?? "",
+                    Url = finalUrl,
                     Publisher = finalPublisher ?? "Unknown Publisher"
                 };
             }
@@ -1320,7 +1380,13 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
             {
                 Console.WriteLine($"[CitationManagementService] Error enhancing metadata: {ex.Message}");
                 
-                // Fallback to existing data
+                // Fallback to existing data with smart URL extraction
+                string fallbackUrl = CleanUrl(document.SourceUrl ?? "");
+                if (string.IsNullOrEmpty(fallbackUrl) || (!fallbackUrl.StartsWith("http://") && !fallbackUrl.StartsWith("https://")))
+                {
+                    fallbackUrl = ExtractUrlFromContent(document.Abstract) ?? ExtractUrlFromContent(document.SourceUrl) ?? "";
+                }
+                
                 return new EnhancedCitationData
                 {
                     Title = document.Title ?? "Unknown Title",
@@ -1328,7 +1394,7 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
                     Year = document.Year ?? DateTime.UtcNow.Year,
                     PublicationDate = document.PublicationDate?.ToString("yyyy-MM-dd") ?? "",
                     Type = document.DocumentType.ToString(),
-                    Url = document.SourceUrl ?? "",
+                    Url = fallbackUrl,
                     Publisher = document.Publisher ?? "Unknown Publisher"
                 };
             }
@@ -1344,21 +1410,42 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
             if (!string.IsNullOrWhiteSpace(document.Title))
                 prompt += $"Title: {document.Title}\n";
             
+            // Check if SourceUrl contains actual URL or if it's mixed with abstract content
             if (!string.IsNullOrWhiteSpace(document.SourceUrl))
             {
-                prompt += $"URL: {document.SourceUrl}\n";
+                var cleanedUrl = CleanUrl(document.SourceUrl);
                 
-                // Add specific instructions for different platforms
-                if (document.SourceUrl.Contains("researchgate.net"))
-                    prompt += "\nThis is a ResearchGate publication. Extract the author names from the URL path or publication details.\n";
-                else if (document.SourceUrl.Contains("arxiv.org"))
-                    prompt += "\nThis is an arXiv paper. Extract author names and submission year.\n";
-                else if (document.SourceUrl.Contains("ieee") || document.SourceUrl.Contains("acm"))
-                    prompt += "\nThis is from an academic publisher. Extract precise author and publication information.\n";
+                // If the URL looks like actual URL (starts with http/https), include it
+                if (cleanedUrl.StartsWith("http://") || cleanedUrl.StartsWith("https://"))
+                {
+                    prompt += $"URL: {cleanedUrl}\n";
+                    
+                    // Add specific instructions for different platforms
+                    if (cleanedUrl.Contains("researchgate.net"))
+                        prompt += "\nThis is a ResearchGate publication. Extract the author names from the URL path or publication details.\n";
+                    else if (cleanedUrl.Contains("arxiv.org"))
+                        prompt += "\nThis is an arXiv paper. Extract author names and submission year.\n";
+                    else if (cleanedUrl.Contains("ieee") || cleanedUrl.Contains("acm"))
+                        prompt += "\nThis is from an academic publisher. Extract precise author and publication information.\n";
+                }
+                else
+                {
+                    // If SourceUrl doesn't look like URL, treat it as content
+                    var limitedContent = document.SourceUrl.Length > 500 
+                        ? document.SourceUrl.Substring(0, 500) + "..."
+                        : document.SourceUrl;
+                    prompt += $"Content: {limitedContent}\n";
+                }
             }
             
+            // Handle Abstract field - limit length to avoid overwhelming AI
             if (!string.IsNullOrWhiteSpace(document.Abstract))
-                prompt += $"Abstract: {document.Abstract}\n";
+            {
+                var limitedAbstract = document.Abstract.Length > 800 
+                    ? document.Abstract.Substring(0, 800) + "..."
+                    : document.Abstract;
+                prompt += $"Abstract: {limitedAbstract}\n";
+            }
             
             if (!string.IsNullOrWhiteSpace(document.Description))
                 prompt += $"Description: {document.Description}\n";
@@ -1394,6 +1481,210 @@ Do not include 'Unknown Author' - always provide a contextually appropriate prof
             public string Type { get; set; } = string.Empty;
             public string Url { get; set; } = string.Empty;
             public string Publisher { get; set; } = string.Empty;
+        }
+
+        /// <summary>
+        /// Infer publisher from document context when URL is malformed and publisher is missing
+        /// </summary>
+        private string InferPublisherFromContext(Documents document)
+        {
+            // Check title for publisher clues
+            var title = document.Title?.ToLower() ?? "";
+            var journal = document.Journal?.ToLower() ?? "";
+            var abstract_ = document.Abstract?.ToLower() ?? "";
+            
+            // Journal-based inference
+            if (!string.IsNullOrWhiteSpace(journal))
+            {
+                if (journal.Contains("information") && journal.Contains("knowledge") && journal.Contains("management"))
+                    return "Journal of Information and Knowledge Management";
+                if (journal.Contains("ieee") || journal.Contains("institute of electrical"))
+                    return "IEEE";
+                if (journal.Contains("acm") || journal.Contains("association for computing"))
+                    return "ACM";
+                if (journal.Contains("springer"))
+                    return "Springer";
+                if (journal.Contains("elsevier"))
+                    return "Elsevier";
+                
+                // Return journal name as publisher if it looks like a proper journal
+                if (journal.Contains("journal") || journal.Contains("proceedings") || journal.Contains("transactions"))
+                    return System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(journal);
+            }
+            
+            // Title-based inference
+            if (title.Contains("information") && title.Contains("knowledge") && title.Contains("management"))
+                return "Journal of Information and Knowledge Management";
+            if (title.Contains("ieee") || title.Contains("institute"))
+                return "IEEE";
+            if (title.Contains("computer science") || title.Contains("computing"))
+                return "Computer Science Publisher";
+            if (title.Contains("research") || title.Contains("study"))
+                return "Academic Research Publisher";
+            
+            // Abstract-based inference
+            if (abstract_.Contains("journal") && abstract_.Contains("information") && abstract_.Contains("knowledge"))
+                return "Journal of Information and Knowledge Management";
+            
+            // Document type-based fallback
+            switch (document.DocumentType)
+            {
+                case (int)DocumentType.Research:
+                    return "Academic Research Publisher";
+                case (int)DocumentType.Book:
+                    return "Academic Press";
+                case (int)DocumentType.Pdf:
+                    return "Digital Publication";
+                default:
+                    return "Unknown Publisher";
+            }
+        }
+
+        /// <summary>
+        /// Cleans duplicate URL text from various sources
+        /// </summary>
+        private string CleanUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return "";
+
+            var originalUrl = url;
+            
+            // Remove common duplicate prefixes that might be added during metadata extraction
+            var cleanPatterns = new[]
+            {
+                "Available online at https: https://",
+                "Available online at http: http://",
+                "Available online at https: ",
+                "Available online at http: ",
+                "Available online at: https://",
+                "Available online at: http://",
+                "Available online at: ",
+                "Available at https: https://",
+                "Available at http: http://",
+                "Available at https: ",
+                "Available at http: ",
+                "Available at: https://", 
+                "Available at: http://",
+                "Available at: ",
+                "Available from https: https://",
+                "Available from http: http://",
+                "Available from https: ",
+                "Available from http: ",
+                "Available from: https://",
+                "Available from: http://",
+                "Available from: "
+            };
+
+            foreach (var pattern in cleanPatterns)
+            {
+                if (url.StartsWith(pattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    // For patterns with duplicate protocols, extract the clean URL
+                    if (pattern.Contains("https: https://"))
+                    {
+                        url = "https://" + url.Substring(pattern.Length);
+                    }
+                    else if (pattern.Contains("http: http://"))
+                    {
+                        url = "http://" + url.Substring(pattern.Length);
+                    }
+                    else
+                    {
+                        url = url.Substring(pattern.Length);
+                    }
+                    break;
+                }
+            }
+
+            // Also clean any remaining duplicate protocol patterns
+            url = url.Replace("https: https://", "https://")
+                     .Replace("http: http://", "http://")
+                     .Replace("https: http://", "http://")
+                     .Replace("http: https://", "https://");
+
+            // Clean truncated or malformed URLs that end with incomplete paths
+            var malformedPatterns = new[]
+            {
+                "https://journal,",
+                "http://journal,", 
+                "https://journal.",
+                "http://journal.",
+                "https://journal",
+                "http://journal"
+            };
+
+            foreach (var malformedPattern in malformedPatterns)
+            {
+                if (url.Equals(malformedPattern, StringComparison.OrdinalIgnoreCase) || 
+                    url.StartsWith(malformedPattern + " ", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[CleanUrl] Detected malformed URL: '{url}' - removing completely");
+                    return ""; // Return empty string for malformed URLs
+                }
+            }
+
+            // If we still don't have a valid URL, try to extract from the original text
+            if (!url.StartsWith("http://") && !url.StartsWith("https://"))
+            {
+                var extractedUrl = ExtractUrlFromContent(originalUrl);
+                if (!string.IsNullOrEmpty(extractedUrl))
+                {
+                    return extractedUrl;
+                }
+            }
+
+            return url.Trim();
+        }
+        
+        /// <summary>
+        /// Extract URL from text content if it contains mixed data
+        /// </summary>
+        private static string ExtractUrlFromContent(string? content)
+        {
+            if (string.IsNullOrWhiteSpace(content)) return string.Empty;
+            
+            // First, try to find common patterns where URLs are mixed with duplicate prefixes
+            var duplicatePatterns = new[]
+            {
+                @"Available online at https:\s*https://([\w\-\.]+(?:\.[\w\-]+)+(?:/[^\s]*)?)",
+                @"Available online at http:\s*http://([\w\-\.]+(?:\.[\w\-]+)+(?:/[^\s]*)?)",
+                @"Available at:\s*https://([\w\-\.]+(?:\.[\w\-]+)+(?:/[^\s]*)?)",
+                @"Available at:\s*http://([\w\-\.]+(?:\.[\w\-]+)+(?:/[^\s]*)?)",
+                @"https:\s*https://([\w\-\.]+(?:\.[\w\-]+)+(?:/[^\s]*)?)",
+                @"http:\s*http://([\w\-\.]+(?:\.[\w\-]+)+(?:/[^\s]*)?)"
+            };
+            
+            foreach (var pattern in duplicatePatterns)
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(content, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (match.Success)
+                {
+                    var domain = match.Groups[1].Value.TrimEnd('.', ',', ')', ']', '}', ' ');
+                    return pattern.Contains("https") ? $"https://{domain}" : $"http://{domain}";
+                }
+            }
+            
+            // Standard URL pattern matching
+            var urlPattern = @"(https?://[^\s\]]+(?:\.[^\s\]]+)*(?:/[^\s\]]*)?(?:\?[^\s\]]*)?)";
+            var matches = System.Text.RegularExpressions.Regex.Matches(content, urlPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            if (matches.Count > 0)
+            {
+                // Return the first valid URL found
+                foreach (System.Text.RegularExpressions.Match match in matches)
+                {
+                    var url = match.Groups[1].Value;
+                    // Clean up common trailing characters that might be captured
+                    url = url.TrimEnd('.', ',', ')', ']', '}', ' ');
+                    if (url.StartsWith("http://") || url.StartsWith("https://"))
+                    {
+                        return url;
+                    }
+                }
+            }
+            
+            return string.Empty;
         }
     }
 }

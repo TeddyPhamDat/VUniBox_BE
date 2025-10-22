@@ -11,7 +11,12 @@ namespace VUniBox.Services.Citation
             string publicationDate, // New parameter
             string type,
             string url,
-            string style);
+            string style,
+            string doi = "",
+            string volume = "",
+            string issue = "",
+            string pages = "",
+            string publisher = "");
 
         Task<string> ExtractAuthorWithAIAsync(string prompt);
         Task<(string title, string author, int? year, string publisher)> ExtractCitationMetadataWithAIAsync(string prompt);

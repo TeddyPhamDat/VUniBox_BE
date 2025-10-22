@@ -467,6 +467,29 @@ Hãy trả về thông tin theo format JSON sau (chỉ trả JSON, không giải
 
             Console.WriteLine($"[DEBUG] Checking corruption for text: {text}");
 
+            // PRIORITY CHECK: Detect duplicate URL patterns - these are definitely corrupted
+            string[] urlCorruptionPatterns = {
+                "Available online at https: https:",
+                "Available online at http: http:",
+                "Available at https: https:",
+                "Available at http: http:",
+                "Available from https: https:",
+                "Available from http: http:",
+                "https: https://",
+                "http: http://",
+                "https: http://",
+                "http: https://"
+            };
+
+            foreach (var urlPattern in urlCorruptionPatterns)
+            {
+                if (text.Contains(urlPattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[DEBUG] Found URL corruption pattern: {urlPattern} - CORRUPTED!");
+                    return true; // Immediately return corrupted if URL pattern found
+                }
+            }
+
             // Count corrupted characters
             int corruptedCharCount = 0;
             int totalChars = text.Length;
@@ -523,6 +546,15 @@ Hãy trả về thông tin theo format JSON sau (chỉ trả JSON, không giải
             try
             {
                 Console.WriteLine($"[DEBUG] FixTextWithAI called for {fieldType}: {corruptedText}");
+                
+                // QUICK FIX: Handle duplicate URL patterns immediately without AI
+                if (HasDuplicateUrlPattern(corruptedText))
+                {
+                    Console.WriteLine("[DEBUG] Found duplicate URL pattern, applying quick fix");
+                    var quickFixed = CleanDuplicateUrlText(corruptedText);
+                    Console.WriteLine($"[DEBUG] Quick fixed result: {quickFixed}");
+                    return quickFixed;
+                }
                 
                 using var httpClient = new HttpClient();
                 var apiKey = _configuration["GoogleAI:ApiKey"];
@@ -732,6 +764,172 @@ Text đã sửa:";
             catch
             {
                 return "Unknown";
+            }
+        }
+
+        /// <summary>
+        /// Checks if text contains duplicate URL patterns that need immediate fixing.
+        /// </summary>
+        /// <param name="text">The text to check.</param>
+        /// <returns>True if duplicate URL patterns are found.</returns>
+        private bool HasDuplicateUrlPattern(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+
+            string[] duplicatePatterns = {
+                "Available online at https: https:",
+                "Available online at http: http:",
+                "Available at https: https:",
+                "Available at http: http:",
+                "Available from https: https:",
+                "Available from http: http:",
+                "https: https://",
+                "http: http://",
+                "https: http://",
+                "http: https://"
+            };
+
+            return duplicatePatterns.Any(pattern => text.Contains(pattern, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Cleans duplicate URL patterns from text without using AI.
+        /// </summary>
+        /// <param name="text">The text with duplicate URL patterns.</param>
+        /// <returns>Cleaned text with proper URLs.</returns>
+        private string CleanDuplicateUrlText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+
+            var cleanedText = text;
+
+            // FIRST: Remove corrupted URL prefixes that don't lead to valid URLs
+            var corruptedPrefixes = new[]
+            {
+                "Available online at https: journal. php",
+                "Available online at https: journal.",
+                "Available online at https: journal",
+                "Available online at http: journal. php", 
+                "Available online at http: journal.",
+                "Available online at http: journal",
+                "Available at https: journal. php",
+                "Available at https: journal.",
+                "Available at https: journal",
+                "Available at http: journal. php",
+                "Available at http: journal.",
+                "Available at http: journal",
+                "Available from https: journal. php",
+                "Available from https: journal.",
+                "Available from https: journal",
+                "Available from http: journal. php",
+                "Available from http: journal.",
+                "Available from http: journal"
+            };
+
+            // Remove corrupted prefixes completely
+            foreach (var corruptedPrefix in corruptedPrefixes)
+            {
+                if (cleanedText.StartsWith(corruptedPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    cleanedText = cleanedText.Substring(corruptedPrefix.Length).Trim();
+                    Console.WriteLine($"[DEBUG] Removed corrupted prefix: {corruptedPrefix}");
+                    break;
+                }
+            }
+
+            // SECOND: Clean duplicate URL prefixes for valid URLs
+            var cleanPatterns = new Dictionary<string, string>
+            {
+                { "Available online at https: https://", "https://" },
+                { "Available online at http: http://", "http://" },
+                { "Available online at https: ", "" },
+                { "Available online at http: ", "" },
+                { "Available at https: https://", "https://" },
+                { "Available at http: http://", "http://" },
+                { "Available at https: ", "" },
+                { "Available at http: ", "" },
+                { "Available from https: https://", "https://" },
+                { "Available from http: http://", "http://" },
+                { "Available from https: ", "" },
+                { "Available from http: ", "" },
+                { "https: https://", "https://" },
+                { "http: http://", "http://" },
+                { "https: http://", "http://" },
+                { "http: https://", "https://" }
+            };
+
+            foreach (var pattern in cleanPatterns)
+            {
+                cleanedText = cleanedText.Replace(pattern.Key, pattern.Value);
+            }
+
+            // THIRD: If we have remaining text that looks like corrupted metadata, try to clean it
+            if (cleanedText.Contains("JIKM Journal") || cleanedText.Contains("e-ISSN") || cleanedText.Contains("Vol."))
+            {
+                // Try to extract clean title/content from the corrupted metadata
+                var cleanContent = ExtractCleanContentFromMetadata(cleanedText);
+                if (!string.IsNullOrEmpty(cleanContent))
+                {
+                    return cleanContent;
+                }
+            }
+
+            // FOURTH: Extract URL if there's a valid one in the text
+            var urlMatch = System.Text.RegularExpressions.Regex.Match(cleanedText, @"(https?://[^\s]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (urlMatch.Success)
+            {
+                var extractedUrl = urlMatch.Groups[1].Value.TrimEnd('.', ',', ')', ']', '}', ' ');
+                return extractedUrl;
+            }
+
+            return cleanedText.Trim();
+        }
+
+        /// <summary>
+        /// Extracts clean content from corrupted metadata text.
+        /// </summary>
+        /// <param name="corruptedText">The corrupted metadata text.</param>
+        /// <returns>Clean content or empty string.</returns>
+        private string ExtractCleanContentFromMetadata(string corruptedText)
+        {
+            try
+            {
+                // Look for journal/paper titles in the corrupted text
+                if (corruptedText.Contains("JIKM Journal"))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(
+                        corruptedText, 
+                        @"JIKM Journal[^0-9]*(\d{4})[^A-Z]*([A-Z][^1-9]*)", 
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    
+                    if (match.Success)
+                    {
+                        return $"JIKM Journal of Information and Knowledge Management ({match.Groups[1].Value})";
+                    }
+                }
+
+                // Look for paper titles before author names
+                var titleMatch = System.Text.RegularExpressions.Regex.Match(
+                    corruptedText,
+                    @"[A-Z][^0-9]{20,}?(?=\s*\d+\s*\d+\*?\s*\d+\s+[A-Z][a-z]+\s+[A-Z][a-z]+)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (titleMatch.Success)
+                {
+                    var title = titleMatch.Value.Trim();
+                    // Clean up common corruptions
+                    title = title.Replace("www. com", "").Trim();
+                    if (title.Length > 10 && title.Length < 200)
+                    {
+                        return title;
+                    }
+                }
+
+                return string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
     }

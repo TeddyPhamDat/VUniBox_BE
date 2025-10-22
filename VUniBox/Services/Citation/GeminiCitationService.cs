@@ -99,6 +99,113 @@ namespace VUniBox.Services.Citation
             return string.Join(" ", words);
         }
 
+        /// <summary>
+        /// Clean AI-generated title artifacts and format properly
+        /// </summary>
+        private string CleanAIGeneratedTitle(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title))
+                return "Untitled";
+
+            // Remove AI artifacts like markdown formatting
+            title = title.Trim()
+                         .Replace("**", "") // Remove bold markdown
+                         .Replace("*", "")  // Remove italic markdown
+                         .Replace("# ", "") // Remove heading markdown
+                         .Replace("## ", "")
+                         .Replace("### ", "")
+                         .Trim();
+
+            // Remove common AI prefixes
+            var prefixes = new[] { "Title:", "title:", "TITLE:", "Article:", "Paper:", "Document:" };
+            foreach (var prefix in prefixes)
+            {
+                if (title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    title = title.Substring(prefix.Length).Trim();
+                }
+            }
+
+            // Remove quotes if they wrap the entire title
+            if (title.StartsWith("\"") && title.EndsWith("\""))
+            {
+                title = title.Substring(1, title.Length - 2).Trim();
+            }
+
+            return string.IsNullOrWhiteSpace(title) ? "Untitled" : title;
+        }
+
+        /// <summary>
+        /// Format title according to APA style (sentence case - only first word and proper nouns capitalized)
+        /// </summary>
+        private string FormatTitleAPA(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title))
+                return "Untitled";
+
+            // First clean AI artifacts
+            title = CleanAIGeneratedTitle(title);
+            
+            // If title already looks properly formatted (has mixed case), keep it as is
+            if (title != title.ToUpper() && title != title.ToLower() && char.IsUpper(title[0]))
+            {
+                return title;
+            }
+            
+            // Convert to sentence case (first letter capitalized, rest lowercase except for proper nouns)
+            var words = title.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var result = new List<string>();
+            
+            for (int i = 0; i < words.Length; i++)
+            {
+                var word = words[i].Trim();
+                if (string.IsNullOrEmpty(word)) continue;
+                
+                if (i == 0)
+                {
+                    // First word is always capitalized
+                    result.Add(char.ToUpper(word[0]) + word.Substring(1).ToLower());
+                }
+                else
+                {
+                    // Check if it's a proper noun or important word that should remain capitalized
+                    if (IsProperNoun(word))
+                    {
+                        result.Add(char.ToUpper(word[0]) + word.Substring(1).ToLower());
+                    }
+                    else
+                    {
+                        result.Add(word.ToLower());
+                    }
+                }
+            }
+            
+            return string.Join(" ", result);
+        }
+
+        /// <summary>
+        /// Check if a word should be capitalized in APA title format
+        /// </summary>
+        private bool IsProperNoun(string word)
+        {
+            if (string.IsNullOrWhiteSpace(word)) return false;
+            
+            word = word.ToLower();
+            
+            // Common proper nouns and important terms that should be capitalized
+            var properNouns = new HashSet<string>
+            {
+                "ai", "artificial", "intelligence", "covid", "covid-19", "api", "http", "https", 
+                "doi", "isbn", "issn", "ieee", "acm", "springer", "elsevier", "researchgate",
+                "arxiv", "google", "microsoft", "amazon", "facebook", "twitter", "linkedin",
+                "vietnam", "vietnamese", "america", "american", "china", "chinese", "japan", "japanese",
+                "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"
+            };
+            
+            return properNouns.Contains(word) || 
+                   word.Length <= 3 && word.All(char.IsUpper); // Acronyms
+        }
+
         public async Task<(string formatted, string inText)> GenerateCitationAsync(
             string title,
             string authors,
@@ -106,7 +213,12 @@ namespace VUniBox.Services.Citation
             string publicationDate,
             string type,
             string url,
-            string style)
+            string style,
+            string doi = "",
+            string volume = "",
+            string issue = "",
+            string pages = "",
+            string publisher = "")
         {
             Console.WriteLine($"[GeminiCitationService] Generating citation for style: {style}");
             Console.WriteLine($"[GeminiCitationService] Input data - Title: {title}, Authors: {authors}, Year: {year}, PublicationDate: {publicationDate}");
@@ -115,7 +227,7 @@ namespace VUniBox.Services.Citation
             if (!_useAI)
             {
                 Console.WriteLine("[GeminiCitationService] Using direct fallback mode for consistent results");
-                var fallbackResult = GenerateAccurateCitation(title, authors, year, url, style, publicationDate);
+                var fallbackResult = GenerateAccurateCitation(title, authors, year, url, style, publicationDate, doi, volume, issue, pages, publisher);
                 Console.WriteLine($"[GeminiCitationService] Fallback result - Formatted: {fallbackResult.formatted}, InText: {fallbackResult.inText}");
                 return fallbackResult;
             }
@@ -130,12 +242,13 @@ namespace VUniBox.Services.Citation
             catch (Exception ex)
             {
                 Console.WriteLine($"[GeminiCitationService] AI error: {ex.Message}, falling back to accurate citation");
-                return GenerateAccurateCitation(title, authors, year, url, style, publicationDate);
+                return GenerateAccurateCitation(title, authors, year, url, style, publicationDate, doi, volume, issue, pages, publisher);
             }
         }
 
         private (string formatted, string inText) GenerateAccurateCitation(
-            string title, string authors, int? year, string url, string style, string publicationDate)
+            string title, string authors, int? year, string url, string style, string publicationDate,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
             // Extract year from multiple sources
             var effectiveYear = ExtractYear(year, publicationDate);
@@ -153,31 +266,31 @@ namespace VUniBox.Services.Citation
             switch (style.ToUpper())
             {
                 case "APA":
-                    (formatted, inText) = GenerateAPACitation(authors, effectiveYear, title, url, accessDate);
+                    (formatted, inText) = GenerateAPACitation(authors, effectiveYear, title, url, accessDate, doi, volume, issue, pages, publisher);
                     break;
 
                 case "MLA":
-                    (formatted, inText) = GenerateMLACitation(authors, title, url, accessDate);
+                    (formatted, inText) = GenerateMLACitation(authors, title, url, accessDate, effectiveYear, doi, volume, issue, pages, publisher);
                     break;
 
                 case "CHICAGO":
-                    (formatted, inText) = GenerateChicagoCitation(authors, title, url, accessDate, effectiveYear);
+                    (formatted, inText) = GenerateChicagoCitation(authors, title, url, accessDate, effectiveYear, doi, volume, issue, pages, publisher);
                     break;
 
                 case "HARVARD":
-                    (formatted, inText) = GenerateHarvardCitation(authors, effectiveYear, title, url, accessDate);
+                    (formatted, inText) = GenerateHarvardCitation(authors, effectiveYear, title, url, accessDate, doi, volume, issue, pages, publisher);
                     break;
 
                 case "IEEE":
-                    (formatted, inText) = GenerateIEEECitation(authors, title, url, accessDate);
+                    (formatted, inText) = GenerateIEEECitation(authors, title, url, accessDate, doi, volume, issue, pages, publisher);
                     break;
 
                 case "VANCOUVER":
-                    (formatted, inText) = GenerateVancouverCitation(authors, title, url, accessDate);
+                    (formatted, inText) = GenerateVancouverCitation(authors, title, url, accessDate, doi, volume, issue, pages, publisher);
                     break;
 
                 default:
-                    (formatted, inText) = GenerateAPACitation(authors, effectiveYear, title, url, accessDate);
+                    (formatted, inText) = GenerateAPACitation(authors, effectiveYear, title, url, accessDate, doi, volume, issue, pages, publisher);
                     break;
             }
 
@@ -219,16 +332,69 @@ namespace VUniBox.Services.Citation
             return DateTime.Now.Year;
         }
 
-        private (string formatted, string inText) GenerateAPACitation(string authors, int? year, string title, string url, string accessDate)
+        private (string formatted, string inText) GenerateAPACitation(string authors, int? year, string title, string url, string accessDate,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
             // Ensure we always have a valid year - should not be null after ExtractYear changes
             var yearStr = year?.ToString() ?? DateTime.Now.Year.ToString();
             
-            // Format APA citation properly
+            // Format APA citation according to academic standards
             var authorPart = FormatAuthorsAPA(authors);
-            var urlPart = !string.IsNullOrEmpty(url) ? $"Retrieved {accessDate}, from {url}" : $"Retrieved {accessDate}";
             
-            var formatted = $"{authorPart} ({yearStr}). {title}. {urlPart}";
+            // Format title with proper capitalization (only first word and proper nouns capitalized)
+            var formattedTitle = FormatTitleAPA(title);
+            
+            // Build the formatted citation with publisher and volume/issue/pages
+            string formatted;
+            var citationParts = new List<string> { $"{authorPart} ({yearStr})", formattedTitle };
+
+            // Add publisher if available
+            if (!string.IsNullOrEmpty(publisher))
+            {
+                citationParts.Add(publisher);
+            }
+
+            var volIssuePages = "";
+            // Add volume/issue/pages information if available
+            if (!string.IsNullOrEmpty(volume))
+            {
+                volIssuePages = $"{volume}";
+                
+                if (!string.IsNullOrEmpty(issue))
+                {
+                    volIssuePages += $"({issue})";
+                }
+            }
+            if (!string.IsNullOrEmpty(pages))
+            {
+                if (!string.IsNullOrEmpty(volIssuePages))
+                    volIssuePages += $", {pages}";
+                else
+                    volIssuePages = pages;
+            }
+            if (!string.IsNullOrEmpty(volIssuePages))
+            {
+                citationParts.Add(volIssuePages);
+                Console.WriteLine($"Vol/Issue/Pages Part: {volIssuePages}");
+            }
+
+            // Add DOI if available, otherwise URL
+            if (!string.IsNullOrEmpty(doi))
+            {
+                citationParts.Add($"https://doi.org/{doi}");
+            }
+            else if (!string.IsNullOrEmpty(url))
+            {
+                citationParts.Add($"Retrieved {accessDate}, from {url}");
+            }
+            else
+            {
+                citationParts.Add($"Retrieved {accessDate}");
+            }
+            
+            formatted = string.Join(". ", citationParts);
+            
+            // In-text citation: (Author, Year) or (Author et al., Year)
             var inText = $"({GetLastNameAPA(authors)}, {yearStr})";
             
             return (formatted, inText);
@@ -246,29 +412,79 @@ namespace VUniBox.Services.Citation
                                    .Select(a => a.Trim())
                                    .ToList();
 
-            if (authorList.Count == 1)
+            // Handle "and" in a single string
+            if (authorList.Count == 1 && authorList[0].Contains(" and "))
             {
-                // Handle single author or "and" separated authors
-                var singleAuthor = authorList[0];
-                if (singleAuthor.Contains(" and "))
-                {
-                    var parts = singleAuthor.Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length == 2)
-                    {
-                        return $"{parts[0].Trim()}, & {parts[1].Trim()}";
-                    }
-                }
-                return singleAuthor;
+                authorList = authorList[0].Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(a => a.Trim())
+                                         .ToList();
             }
-            else if (authorList.Count == 2)
+
+            // Format each author to APA style (Last, F. M.)
+            var formattedAuthors = authorList.Select(FormatSingleAuthorAPA).ToList();
+
+            if (formattedAuthors.Count == 1)
             {
-                return $"{authorList[0]}, & {authorList[1]}";
+                return formattedAuthors[0];
+            }
+            else if (formattedAuthors.Count == 2)
+            {
+                return $"{formattedAuthors[0]}, & {formattedAuthors[1]}";
+            }
+            else if (formattedAuthors.Count <= 7)
+            {
+                // For 3-7 authors, list all with & before the last
+                var allButLast = string.Join(", ", formattedAuthors.Take(formattedAuthors.Count - 1));
+                return $"{allButLast}, & {formattedAuthors.Last()}";
             }
             else
             {
-                // More than 2 authors - use first author et al.
-                return $"{authorList[0]} et al.";
+                // For more than 7 authors, use first 6, then ..., then last author
+                var firstSix = string.Join(", ", formattedAuthors.Take(6));
+                return $"{firstSix}, ..., {formattedAuthors.Last()}";
             }
+        }
+
+        /// <summary>
+        /// Format a single author name to APA style (Last, F. M.)
+        /// </summary>
+        private string FormatSingleAuthorAPA(string authorName)
+        {
+            if (string.IsNullOrWhiteSpace(authorName))
+                return "Academic Author";
+
+            authorName = authorName.Trim();
+            
+            // If already in Last, F. M. format, return as is
+            if (System.Text.RegularExpressions.Regex.IsMatch(authorName, @"^[A-Z][a-z]+,\s[A-Z]\.\s?([A-Z]\.)?"))
+            {
+                return authorName;
+            }
+
+            var nameParts = authorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            
+            if (nameParts.Length == 1)
+            {
+                // Only one name part, treat as last name
+                return nameParts[0];
+            }
+            else if (nameParts.Length == 2)
+            {
+                // First Last -> Last, F.
+                var firstName = nameParts[0];
+                var lastName = nameParts[1];
+                return $"{lastName}, {firstName.Substring(0, 1).ToUpper()}.";
+            }
+            else if (nameParts.Length >= 3)
+            {
+                // First Middle Last -> Last, F. M.
+                var firstName = nameParts[0];
+                var middleName = nameParts[1];
+                var lastName = nameParts[nameParts.Length - 1];
+                return $"{lastName}, {firstName.Substring(0, 1).ToUpper()}. {middleName.Substring(0, 1).ToUpper()}.";
+            }
+
+            return authorName;
         }
 
         private string GetLastNameAPA(string authors)
@@ -278,75 +494,709 @@ namespace VUniBox.Services.Citation
                 return "Academic Authors"; // Never return "Unknown Author"
             }
 
-            // Get first author's last name for in-text citation
-            var firstAuthor = authors.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-            
-            // Handle "FirstName LastName" format
-            var nameParts = firstAuthor.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            // Handle multiple authors separated by commas, semicolons, or "and"
+            var authorList = authors.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(a => a.Trim())
+                                   .ToList();
+
+            // Handle "and" in a single string
+            if (authorList.Count == 1 && authorList[0].Contains(" and "))
+            {
+                authorList = authorList[0].Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(a => a.Trim())
+                                         .ToList();
+            }
+
+            if (authorList.Count == 1)
+            {
+                // Single author: extract last name
+                return ExtractLastName(authorList[0]);
+            }
+            else if (authorList.Count == 2)
+            {
+                // Two authors: Author1 & Author2
+                var author1LastName = ExtractLastName(authorList[0]);
+                var author2LastName = ExtractLastName(authorList[1]);
+                return $"{author1LastName} & {author2LastName}";
+            }
+            else
+            {
+                // Multiple authors: First author et al.
+                var firstAuthorLastName = ExtractLastName(authorList[0]);
+                return $"{firstAuthorLastName} et al.";
+            }
+        }
+
+        /// <summary>
+        /// Extract last name from a full name
+        /// </summary>
+        private string ExtractLastName(string fullName)
+        {
+            if (string.IsNullOrWhiteSpace(fullName))
+                return "Academic Author";
+
+            fullName = fullName.Trim();
+
+            // If already in "Last, F. M." format, extract the last name part
+            if (fullName.Contains(","))
+            {
+                return fullName.Split(',')[0].Trim();
+            }
+
+            // For "First Middle Last" format
+            var nameParts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (nameParts.Length > 1)
             {
                 return nameParts.Last(); // Return last name
             }
             
-            return firstAuthor; // Return as is if only one part
+            return fullName; // Return as is if only one part
         }
 
-        private (string formatted, string inText) GenerateMLACitation(string authors, string title, string url, string accessDate)
+        private (string formatted, string inText) GenerateMLACitation(string authors, string title, string url, string accessDate, int? year,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
-            var authorPart = FormatAuthorsMLA(authors);
-            var urlPart = !string.IsNullOrEmpty(url) ? $" Web. {accessDate}. <{url}>." : $" Web. {accessDate}.";
-            var formatted = $"{authorPart} \"{title}.\" {urlPart}";
+            var authorPart = FormatAuthorsMLANew(authors);
+            var yearStr = year?.ToString() ?? DateTime.Now.Year.ToString();
+            
+            // Format: Author. "Title." Publisher, vol. Volume, no. Issue, Year, pp. Pages. DOI/URL.
+            var citationParts = new List<string>();
+            
+            // Author and title (clean AI artifacts)
+            var cleanTitle = CleanAIGeneratedTitle(title);
+            citationParts.Add(@$"{authorPart}. ""{cleanTitle}.""");
+
+
+
+            // Add publisher if available
+            if (!string.IsNullOrEmpty(publisher))
+            {
+                citationParts.Add(publisher);
+            }
+
+            // Volume/issue/pages information
+            var volIssuePages = "";
+            if (!string.IsNullOrEmpty(volume))
+            {
+                volIssuePages += $"vol. {volume}";
+                if (!string.IsNullOrEmpty(issue))
+                {
+                    volIssuePages += $", no. {issue}";
+                }
+            }
+            if (!string.IsNullOrEmpty(pages))
+            {
+                if (!string.IsNullOrEmpty(volIssuePages))
+                    volIssuePages += $", pp. {pages}";
+                else
+                    volIssuePages = $"pp. {pages}";
+            }
+            if (!string.IsNullOrEmpty(volIssuePages))
+            {
+                citationParts.Add(volIssuePages);
+                Console.WriteLine($"Vol/Issue/Pages Part: {volIssuePages}");
+            }
+
+            // DOI or URL
+            if (!string.IsNullOrEmpty(doi))
+            {
+                citationParts.Add($"https://doi.org/{doi}");
+            }
+            else if (!string.IsNullOrEmpty(url))
+            {
+                citationParts.Add(url);
+            }
+            
+            var formatted = string.Join(". ", citationParts);
+            if (!formatted.EndsWith("."))
+            {
+                formatted += ".";
+            }
+            
+            // In-text citation: (Author Page) - for now just (Author) since we don't have page numbers in context
             var inText = $"({GetLastNameMLA(authors)})";
             return (formatted, inText);
         }
 
-        private (string formatted, string inText) GenerateChicagoCitation(string authors, string title, string url, string accessDate, int? year)
+        private (string formatted, string inText) GenerateChicagoCitation(string authors, string title, string url, string accessDate, int? year,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
-            var authorPart = FormatAuthorsChicago(authors);
+            var authorPart = FormatAuthorsChicagoNew(authors);
             var yearPart = year?.ToString() ?? DateTime.Now.Year.ToString();
-            var urlPart = !string.IsNullOrEmpty(url) ? $" Accessed {accessDate}. {url}." : $" Accessed {accessDate}.";
-            var formatted = $"{authorPart} \"{title}.\" {yearPart}.{urlPart}";
+            
+            // Format: Author. "Title." Publisher Volume, no. Issue (Year): Pages. DOI/URL.
+            var citationParts = new List<string>();
+            
+            // Author and title (clean AI artifacts)
+            var cleanTitle = CleanAIGeneratedTitle(title);
+            citationParts.Add(@$"{authorPart}. ""{cleanTitle}.""");
+
+
+
+            // Add publisher if available
+            if (!string.IsNullOrEmpty(publisher))
+            {
+                citationParts.Add(publisher);
+            }
+
+            // Volume/issue/pages information
+            var volIssuePages = "";
+            if (!string.IsNullOrEmpty(volume))
+            {
+                volIssuePages += $"{volume}";
+                if (!string.IsNullOrEmpty(issue))
+                {
+                    volIssuePages += $", no. {issue}";
+                }
+                volIssuePages += $" ({yearPart})";
+            }
+            if (!string.IsNullOrEmpty(pages))
+            {
+                if (!string.IsNullOrEmpty(volIssuePages))
+                    volIssuePages += $": {pages}";
+                else
+                    volIssuePages = $"({yearPart}): {pages}";
+            }
+            if (!string.IsNullOrEmpty(volIssuePages))
+            {
+                citationParts.Add(volIssuePages);
+                Console.WriteLine($"Vol/Issue/Pages Part: {volIssuePages}");
+            }
+
+            // DOI or URL
+            if (!string.IsNullOrEmpty(doi))
+            {
+                citationParts.Add($"https://doi.org/{doi}");
+            }
+            else if (!string.IsNullOrEmpty(url))
+            {
+                citationParts.Add($"Accessed {accessDate}. {url}");
+            }
+            
+            var formatted = string.Join(". ", citationParts);
+            if (!formatted.EndsWith("."))
+            {
+                formatted += ".";
+            }
+            
             var inText = $"({GetLastNameChicago(authors)}, {yearPart})";
             return (formatted, inText);
         }
 
-        private (string formatted, string inText) GenerateHarvardCitation(string authors, int? year, string title, string url, string accessDate)
+        private (string formatted, string inText) GenerateHarvardCitation(string authors, int? year, string title, string url, string accessDate,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
             var yearStr = year?.ToString() ?? DateTime.Now.Year.ToString();
-            var accessDateFormatted = DateTime.Now.ToString("dd MMMM yyyy");
-            var authorPart = FormatAuthorsHarvard(authors);
-            var urlPart = !string.IsNullOrEmpty(url) ? $" Available at: {url}" : "";
-            var formatted = $"{authorPart} ({yearStr}) '{title}'.{urlPart} (Accessed: {accessDateFormatted}).";
+            var authorPart = FormatAuthorsHarvardNew(authors);
+            
+            // Build citation with publisher and metadata (clean AI artifacts)
+            var cleanTitle = CleanAIGeneratedTitle(title);
+            var formatted = $"{authorPart} ({yearStr}) '{cleanTitle}'";
+            
+            // Add publisher if available
+            if (!string.IsNullOrEmpty(publisher))
+            {
+                formatted += $", {publisher}";
+            }
+            
+            // Add volume and issue if available
+            if (!string.IsNullOrEmpty(volume))
+            {
+                formatted += $", {volume}";
+                if (!string.IsNullOrEmpty(issue))
+                {
+                    formatted += $"({issue})";
+                }
+            }
+            
+            // Add pages if available
+            if (!string.IsNullOrEmpty(pages))
+            {
+                formatted += $", pp. {pages}";
+            }
+            
+            // Add DOI or URL
+            if (!string.IsNullOrEmpty(doi))
+            {
+                formatted += $". doi: {doi}";
+            }
+            else if (!string.IsNullOrEmpty(url))
+            {
+                formatted += $". Available at: {url}";
+            }
+            else
+            {
+                formatted += ".";
+            }
+            
             var inText = $"({GetLastNameHarvard(authors)}, {yearStr})";
             return (formatted, inText);
         }
 
-        private (string formatted, string inText) GenerateIEEECitation(string authors, string title, string url, string accessDate)
+        private (string formatted, string inText) GenerateIEEECitation(string authors, string title, string url, string accessDate,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
-            var shortAccessDate = DateTime.Now.ToString("MMM. dd, yyyy");
-            var authorPart = FormatAuthorsIEEE(authors);
-            var urlPart = !string.IsNullOrEmpty(url) ? $" [Online]. Available: {url}." : " [Online].";
-            var formatted = $"{authorPart}, \"{title}.\" {urlPart} [Accessed: {shortAccessDate}].";
+            var authorPart = FormatAuthorsIEEENew(authors);
+            
+            // Build citation with publisher and metadata (clean AI artifacts)
+            var cleanTitle = CleanAIGeneratedTitle(title);
+            var formatted = $"[1] {authorPart}, \"{cleanTitle}\"";
+            
+            // Add publisher if available
+            if (!string.IsNullOrEmpty(publisher))
+            {
+                formatted += $", {publisher}";
+            }
+            
+            // Add volume if available
+            if (!string.IsNullOrEmpty(volume))
+            {
+                formatted += $", vol. {volume}";
+            }
+            
+            // Add issue if available
+            if (!string.IsNullOrEmpty(issue))
+            {
+                formatted += $", no. {issue}";
+            }
+            
+            // Add pages if available
+            if (!string.IsNullOrEmpty(pages))
+            {
+                formatted += $", pp. {pages}";
+            }
+            
+            // Add year (extracted from accessDate or current year)
+            var year = DateTime.Now.Year;
+            formatted += $", {year}";
+            
+            // Add DOI or URL
+            if (!string.IsNullOrEmpty(doi))
+            {
+                formatted += $". doi: {doi}";
+            }
+            else if (!string.IsNullOrEmpty(url))
+            {
+                formatted += $". Available: {url}";
+            }
+            else
+            {
+                formatted += ".";
+            }
+            
             var inText = "[1]";
             return (formatted, inText);
         }
 
-        private (string formatted, string inText) GenerateVancouverCitation(string authors, string title, string url, string accessDate)
+        private (string formatted, string inText) GenerateVancouverCitation(string authors, string title, string url, string accessDate,
+            string doi = "", string volume = "", string issue = "", string pages = "", string publisher = "")
         {
-            var citedDate = DateTime.Now.ToString("yyyy MMM dd");
-            var authorPart = FormatAuthorsVancouver(authors);
-            var urlPart = !string.IsNullOrEmpty(url) ? $" Available from: {url}" : "";
-            var formatted = $"{authorPart} {title} [Internet]. [cited {citedDate}].{urlPart}";
-            var inText = "(1)";
+            var authorPart = FormatAuthorsVancouverNew(authors);
+            
+            // Build citation with publisher and metadata (clean AI artifacts)
+            var cleanTitle = CleanAIGeneratedTitle(title);
+            var formatted = $"(1) {authorPart}. {cleanTitle}";
+            
+            // Add publisher if available
+            if (!string.IsNullOrEmpty(publisher))
+            {
+                formatted += $". {publisher}";
+            }
+            
+            // Add year
+            var year = DateTime.Now.Year;
+            formatted += $". {year}";
+            
+            // Add volume and issue if available
+            if (!string.IsNullOrEmpty(volume))
+            {
+                formatted += $";{volume}";
+                if (!string.IsNullOrEmpty(issue))
+                {
+                    formatted += $"({issue})";
+                }
+            }
+            
+            // Add pages if available
+            if (!string.IsNullOrEmpty(pages))
+            {
+                formatted += $":{pages}";
+            }
+            
+            formatted += ".";
+            
+            var inText = "[1]";
             return (formatted, inText);
         }
 
         // Format methods for different citation styles
         private string FormatAuthorsMLA(string authors) => FormatAuthorsGeneric(authors);
         private string FormatAuthorsChicago(string authors) => FormatAuthorsGeneric(authors);
+        
+        private string FormatAuthorsChicagoNew(string authors)
+        {
+            if (string.IsNullOrEmpty(authors))
+                return "";
+
+            // Clean the authors string
+            authors = authors.Trim();
+
+            // Split by common delimiters and clean up
+            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(a => a.Trim())
+                                   .Where(a => !string.IsNullOrEmpty(a))
+                                   .ToList();
+
+            if (authorList.Count == 0)
+                return "";
+
+            // Format authors for Chicago style: FirstName LastName
+            var formattedAuthors = new List<string>();
+            
+            for (int i = 0; i < authorList.Count && i < 3; i++)
+            {
+                var author = FormatSingleAuthorChicago(authorList[i]);
+                formattedAuthors.Add(author);
+            }
+
+            // Handle multiple authors
+            if (authorList.Count > 3)
+            {
+                return $"{formattedAuthors[0]}, {formattedAuthors[1]}, {formattedAuthors[2]}, và {formattedAuthors[2]}";
+            }
+            else if (authorList.Count == 3)
+            {
+                return $"{formattedAuthors[0]}, {formattedAuthors[1]}, và {formattedAuthors[2]}";
+            }
+            else if (authorList.Count == 2)
+            {
+                return $"{formattedAuthors[0]}, và {formattedAuthors[1]}";
+            }
+
+            return formattedAuthors[0];
+        }
+
+        private string FormatSingleAuthorChicago(string author)
+        {
+            if (string.IsNullOrEmpty(author))
+                return "";
+
+            author = author.Trim();
+            var parts = author.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 1)
+            {
+                return author; // Single word, return as is
+            }
+
+            // Assume last part is surname, rest are given names
+            var surname = parts.Last();
+            var givenNames = parts.Take(parts.Length - 1).ToList();
+
+            // Chicago format: FirstName LastName (natural order)
+            return $"{string.Join(" ", givenNames)} {surname}";
+        }
         private string FormatAuthorsHarvard(string authors) => FormatAuthorsGeneric(authors);
+        
+        private string FormatAuthorsHarvardNew(string authors)
+        {
+            if (string.IsNullOrEmpty(authors))
+                return "";
+
+            // Clean the authors string
+            authors = authors.Trim();
+
+            // Split by common delimiters and clean up
+            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(a => a.Trim())
+                                   .Where(a => !string.IsNullOrEmpty(a))
+                                   .ToList();
+
+            if (authorList.Count == 0)
+                return "";
+
+            // Format first author: Lastname, FirstInitial.MiddleInitial.
+            var formattedAuthors = new List<string>();
+            var firstAuthor = FormatSingleAuthorHarvard(authorList[0], true);
+            formattedAuthors.Add(firstAuthor);
+
+            // Add subsequent authors
+            if (authorList.Count > 1)
+            {
+                for (int i = 1; i < authorList.Count && i < 3; i++)
+                {
+                    var author = FormatSingleAuthorHarvard(authorList[i], false);
+                    formattedAuthors.Add(author);
+                }
+
+                // Handle multiple authors
+                if (authorList.Count > 3)
+                {
+                    return $"{formattedAuthors[0]}, {formattedAuthors[1]}, {formattedAuthors[2]} et al.";
+                }
+                else if (authorList.Count == 3)
+                {
+                    return $"{formattedAuthors[0]}, {formattedAuthors[1]} and {formattedAuthors[2]}";
+                }
+                else if (authorList.Count == 2)
+                {
+                    return $"{formattedAuthors[0]} and {formattedAuthors[1]}";
+                }
+            }
+
+            return formattedAuthors[0];
+        }
+
+        private string FormatSingleAuthorHarvard(string author, bool isFirst)
+        {
+            if (string.IsNullOrEmpty(author))
+                return "";
+
+            author = author.Trim();
+            var parts = author.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 1)
+            {
+                return author; // Single word, return as is
+            }
+
+            // Assume last part is surname, rest are given names
+            var surname = parts.Last();
+            var givenNames = parts.Take(parts.Length - 1).ToList();
+
+            // Create initials from given names
+            var initials = string.Join("", givenNames.Select(name => 
+            {
+                var initial = name.Substring(0, 1).ToUpper();
+                return initial + ".";
+            }));
+
+            // Harvard format: Surname, I.I. (for all authors)
+            return $"{surname}, {initials}";
+        }
         private string FormatAuthorsIEEE(string authors) => FormatAuthorsGeneric(authors);
         private string FormatAuthorsVancouver(string authors) => FormatAuthorsGeneric(authors);
+        
+        private string FormatAuthorsIEEENew(string authors)
+        {
+            if (string.IsNullOrEmpty(authors))
+                return "";
+
+            // Clean the authors string
+            authors = authors.Trim();
+
+            // Split by common delimiters and clean up
+            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(a => a.Trim())
+                                   .Where(a => !string.IsNullOrEmpty(a))
+                                   .ToList();
+
+            if (authorList.Count == 0)
+                return "";
+
+            // Format authors for IEEE style: F. M. Lastname
+            var formattedAuthors = new List<string>();
+            
+            for (int i = 0; i < authorList.Count; i++)
+            {
+                var author = FormatSingleAuthorIEEE(authorList[i]);
+                formattedAuthors.Add(author);
+            }
+
+            // Join authors with commas and "and"
+            if (formattedAuthors.Count > 2)
+            {
+                var lastAuthor = formattedAuthors.Last();
+                var otherAuthors = string.Join(", ", formattedAuthors.Take(formattedAuthors.Count - 1));
+                return $"{otherAuthors}, and {lastAuthor}";
+            }
+            else if (formattedAuthors.Count == 2)
+            {
+                return $"{formattedAuthors[0]} and {formattedAuthors[1]}";
+            }
+
+            return formattedAuthors[0];
+        }
+
+        private string FormatSingleAuthorIEEE(string author)
+        {
+            if (string.IsNullOrEmpty(author))
+                return "";
+
+            author = author.Trim();
+            var parts = author.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 1)
+            {
+                return author; // Single word, return as is
+            }
+
+            // Assume last part is surname, rest are given names
+            var surname = parts.Last();
+            var givenNames = parts.Take(parts.Length - 1).ToList();
+
+            // Create initials from given names
+            var initials = string.Join(" ", givenNames.Select(name => 
+            {
+                var initial = name.Substring(0, 1).ToUpper();
+                return initial + ".";
+            }));
+
+            // IEEE format: F. M. Surname
+            return $"{initials} {surname}";
+        }
+        
+        private string FormatAuthorsVancouverNew(string authors)
+        {
+            if (string.IsNullOrEmpty(authors))
+                return "";
+
+            // Clean the authors string
+            authors = authors.Trim();
+
+            // Split by common delimiters and clean up
+            var authorList = authors.Split(new[] { ",", ";", " and ", " & " }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(a => a.Trim())
+                                   .Where(a => !string.IsNullOrEmpty(a))
+                                   .ToList();
+
+            if (authorList.Count == 0)
+                return "";
+
+            // Format authors for Vancouver style: Surname FM
+            var formattedAuthors = new List<string>();
+            
+            for (int i = 0; i < authorList.Count; i++)
+            {
+                var author = FormatSingleAuthorVancouver(authorList[i]);
+                formattedAuthors.Add(author);
+            }
+
+            // Join authors with commas - Vancouver style
+            return string.Join(", ", formattedAuthors);
+        }
+
+        private string FormatSingleAuthorVancouver(string author)
+        {
+            if (string.IsNullOrEmpty(author))
+                return "";
+
+            author = author.Trim();
+            var parts = author.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 1)
+            {
+                return author; // Single word, return as is
+            }
+
+            // Assume last part is surname, rest are given names
+            var surname = parts.Last();
+            var givenNames = parts.Take(parts.Length - 1).ToList();
+
+            // Create initials without periods for Vancouver style
+            var initials = string.Join("", givenNames.Select(name => 
+            {
+                var initial = name.Substring(0, 1).ToUpper();
+                return initial;
+            }));
+
+            // Vancouver format: Surname FM (no spaces, no periods)
+            return $"{surname} {initials}";
+        }
+
+        /// <summary>
+        /// Format authors for MLA style: Last, First, et al.
+        /// </summary>
+        private string FormatAuthorsMLANew(string authors)
+        {
+            if (string.IsNullOrWhiteSpace(authors))
+            {
+                return "Academic Authors";
+            }
+
+            // Handle multiple authors separated by commas, semicolons, or "and"
+            var authorList = authors.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(a => a.Trim())
+                                   .ToList();
+
+            // Handle "and" in a single string
+            if (authorList.Count == 1 && authorList[0].Contains(" and "))
+            {
+                authorList = authorList[0].Split(new string[] { " and " }, StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(a => a.Trim())
+                                         .ToList();
+            }
+
+            if (authorList.Count == 1)
+            {
+                return FormatSingleAuthorMLA(authorList[0]);
+            }
+            else if (authorList.Count == 2)
+            {
+                return $"{FormatSingleAuthorMLA(authorList[0])}, and {FormatSingleAuthorMLA(authorList[1], false)}";
+            }
+            else if (authorList.Count >= 3)
+            {
+                // For 3+ authors: First author, et al.
+                return $"{FormatSingleAuthorMLA(authorList[0])}, et al.";
+            }
+
+            return authors;
+        }
+
+        /// <summary>
+        /// Format a single author for MLA: Last, First
+        /// </summary>
+        private string FormatSingleAuthorMLA(string authorName, bool isFirstAuthor = true)
+        {
+            if (string.IsNullOrWhiteSpace(authorName))
+                return "Academic Author";
+
+            authorName = authorName.Trim();
+            
+            // If already in Last, First format, return as is
+            if (authorName.Contains(",") && isFirstAuthor)
+            {
+                return authorName;
+            }
+
+            var nameParts = authorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            
+            if (nameParts.Length == 1)
+            {
+                return nameParts[0];
+            }
+            else if (nameParts.Length == 2)
+            {
+                if (isFirstAuthor)
+                {
+                    // First Middle Last -> Last, First
+                    return $"{nameParts[1]}, {nameParts[0]}";
+                }
+                else
+                {
+                    // Subsequent authors: First Last
+                    return $"{nameParts[0]} {nameParts[1]}";
+                }
+            }
+            else if (nameParts.Length >= 3)
+            {
+                if (isFirstAuthor)
+                {
+                    // First Middle Last -> Last, First Middle
+                    var firstName = string.Join(" ", nameParts.Take(nameParts.Length - 1));
+                    var lastName = nameParts[nameParts.Length - 1];
+                    return $"{lastName}, {firstName}";
+                }
+                else
+                {
+                    // Subsequent authors: First Middle Last
+                    return string.Join(" ", nameParts);
+                }
+            }
+
+            return authorName;
+        }
 
         private string FormatAuthorsGeneric(string authors)
         {
