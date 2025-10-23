@@ -565,8 +565,8 @@ namespace VUniBox.Services.DocumentManagement
             if (!string.IsNullOrEmpty(request.Doi))
                 document.Doi = request.Doi;
 
-            if(!string.IsNullOrEmpty(request.Volumne))
-                document.Volume = request.Volumne;
+            if(!string.IsNullOrEmpty(request.Volume))
+                document.Volume = request.Volume;
 
             if (!string.IsNullOrEmpty(request.Issue))
                 document.Issue = request.Issue;
