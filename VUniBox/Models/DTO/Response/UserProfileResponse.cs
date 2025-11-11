@@ -89,9 +89,43 @@ namespace VUniBox.Models.DTO.Response
         /// </summary>
         public bool IsPlanExpired => PlanExpiryDate.HasValue && PlanExpiryDate.Value < DateTime.Now;
         /// <summary>
-        /// Gets the number of days until plan expires (or days since expired if negative).
+        /// Gets the number of days until plan expires (returns 0 if already expired).
         /// </summary>
-        public int? DaysUntilExpiry => PlanExpiryDate.HasValue ? (int)(PlanExpiryDate.Value - DateTime.Now).TotalDays : null;
+        public int? DaysUntilExpiry 
+        { 
+            get
+            {
+                if (!PlanExpiryDate.HasValue) return null;
+                
+                var days = (int)(PlanExpiryDate.Value - DateTime.Now).TotalDays;
+                // Return 0 instead of negative numbers for expired plans
+                return days < 0 ? 0 : days;
+            }
+        }
+        
+        /// <summary>
+        /// Gets a user-friendly status text for the plan expiry.
+        /// </summary>
+        public string? ExpiryStatusText
+        {
+            get
+            {
+                if (!PlanExpiryDate.HasValue) return null;
+                
+                var days = (int)(PlanExpiryDate.Value - DateTime.Now).TotalDays;
+                
+                if (days < 0)
+                    return "Đã hết hạn";
+                else if (days == 0)
+                    return "Hết hạn hôm nay";
+                else if (days == 1)
+                    return "Còn 1 ngày";
+                else if (days <= 7)
+                    return $"Còn {days} ngày";
+                else
+                    return $"Còn {days} ngày";
+            }
+        }
         
         // Document Statistics
         /// <summary>

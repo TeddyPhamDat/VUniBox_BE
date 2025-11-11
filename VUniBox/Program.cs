@@ -148,8 +148,10 @@ builder.Services.AddScoped<VUniBox.Services.Subscription.ISubscriptionService, V
 // Register PayOS Payment Service
 builder.Services.AddScoped<VUniBox.Services.Payment.IPayOSService, VUniBox.Services.Payment.PayOSService>();
 
+// Register Background Services
 builder.Services.AddHostedService<VUniBox.Services.Background.TrashCleanupService>();
 builder.Services.AddHostedService<VUniBox.Services.Background.MonthlyQuotaResetService>();
+builder.Services.AddHostedService<VUniBox.Services.Background.SubscriptionExpiryService>();
 
 // Add this before app.Build();
 builder.Services.AddDbContext<VUniBox.DBContext.VUniBoxContext>(options =>
